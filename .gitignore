@@ -1,0 +1,48 @@
+# ==========================================
+# 审计业务数据与测试文件防护（绝对防泄密）
+# ==========================================
+
+# 1. 排除当前已知测试文件夹
+铁联化轻/
+
+# 2. 排除所有原始财务业务底稿与报表文件（无论放在哪）
+*.xls
+*.xlsx
+*.doc
+*.docx
+*.pdf
+
+# 3. 排除生成的核对成果与中间件
+附注check_*.xlsx
+check.xlsx
+extracted_notes.xlsx
+*.bak
+
+# 4. 排除测试脚本、中间测试日志与临时文本
+*.log
+*findings*.txt
+*report*.txt
+*output*.txt
+*summary*.txt
+*specs*.txt
+*test*.txt
+*mapping*.txt
+scratch_*.*
+test_*.py
+
+# ==========================================
+# 系统与编译中间产物
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.spec
+
+# Office 运行临时文件
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
