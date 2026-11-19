@@ -213,8 +213,12 @@ def evaluate(item, table_model, tables_by_idx=None):
                 return CheckResult(item, alt_exp, actual, actual - alt_exp, 'pass')
     if item.is_ratio:
         # 比例按"百分点"比较：0.01 个百分点以内算平
-        status = 'pass' if abs(diff) * 100 <= RATIO_TOLERANCE_PP else 'fail'
-        # 比例类一律按"软提示"处理
+        if abs(diff) * 100 <= RATIO_TOLERANCE_PP:
+            status = 'pass'
+        elif item.soft_fail:
+            status = 'unclear'      # 分母口径不唯一，不硬判差异
+        else:
+            status = 'fail'
         if item.level == 'hard':
             item.level = 'soft'
     elif abs(diff) <= TOLERANCE:
