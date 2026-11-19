@@ -173,14 +173,32 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     check_cols = {}
     base_col = tm.ref.cols + 2
     for i, rid in enumerate(rules_here):
-        col = base_col + i
-        if col >= REPORT_COL_START:
-            break
-        check_cols[rid] = col
-        hc = ws.cell(row_ptr - 1, col, horiz_map[rid])
+        check_cols[rid] = base_col + i
+        hc = ws.cell(row_ptr - 1, check_cols[rid], horiz_map[rid])
         hc.font = Font(name='微软雅黑', size=8, color='808080')
         hc.fill = FILL_TABLE_TITLE
         hc.alignment = Alignment(horizontal='center')
+
+    # 报表勾稽 / TB 勾稽的列也**按这张表自己的宽度**往外排，
+    # 不锁定固定列——表宽超出时不会覆盖
+    used_max = max([tm.ref.cols] + list(check_cols.values()))
+    col_cursor = used_max + 2
+    periods = list(report_map.keys())
+    report_map = {pp: col_cursor + i for i, pp in enumerate(periods)}
+    col_cursor += len(periods) + 1
+    tb_map = {pp: col_cursor + i for i, pp in enumerate(periods)}
+
+    has_tb_here = any(k[0] == tm.ref.idx for k in (tb_by_row or {}))
+    for pp in periods:
+        hc = ws.cell(row_ptr - 1, report_map[pp], f'报表差额 {pp}')
+        hc.font = F_REPORT
+        hc.fill = FILL_REPORT_HDR
+        hc.alignment = Alignment(horizontal='center')
+        if has_tb_here:
+            hc2 = ws.cell(row_ptr - 1, tb_map[pp], f'TB差额 {pp}')
+            hc2.font = F_REPORT
+            hc2.fill = FILL_TB_HDR
+            hc2.alignment = Alignment(horizontal='center')
 
     src_to_dst = {}
     note_row_map = {}
@@ -1033,9 +1051,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     periods = _period_slots(cross, tb_checks)
     report_map, tb_map = _col_map(periods)
 
-    # 右侧表头
-    if periods:
-        _write_right_headers(ws, 3, periods, report_map, tb_map, bool(tb_checks))
+    # 右侧表头改为每张表自己写（列位置随表宽浮动，不再锁定固定列）
 
     results_by_key = {id(r.item): r for r in results}
     checks_by_table = {}
