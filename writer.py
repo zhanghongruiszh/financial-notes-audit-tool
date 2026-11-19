@@ -586,6 +586,14 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
         except ValueError:
             return None
 
+    # 用会计恒等式反推"哪些只是子项"，这类不进未勾稽
+    child_names = set()
+    try:
+        import report_relations as _rel
+        child_names = _rel.child_items(book, report)
+    except Exception:
+        child_names = set()
+
     by_row = {}
     for cc in (cross or []):
         by_row.setdefault((cc.sheet, cc.rows), []).append(cc)
@@ -673,6 +681,13 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                 continue
             # 勾稽正常的不在汇总表占行——这里只列"要人看的"
             if state not in ('有差异', '待确认') and flag != '未勾稽':
+                continue
+            # 只是子项（其中/减：/加：），不是报表项目，不算未勾稽
+            if flag == '未勾稽' and name in child_names:
+                continue
+            # 现金流量表只勾经营活动净额，其余走 TB，不进"未勾稽"
+            if (flag == '未勾稽' and sheet.name.startswith('现金流量表')
+                    and '经营活动产生的现金流量净额' not in name):
                 continue
             seq += 1
             vals[0] = seq

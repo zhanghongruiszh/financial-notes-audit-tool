@@ -167,3 +167,34 @@ def check(book, report, relations=None):
 def summarize(results):
     from collections import Counter
     return dict(Counter(r[6] for r in results))
+
+def child_items(wb, report):
+    """挑出"不是报表项目、只是子项"的行。
+
+    判据（结合会计恒等式一起用）：
+      1. 行名以「其中/减：/加：」开头 —— 明确的子项标记
+      2. 参与恒等式的项目一定不是子项（如"营业总收入""净利润"）
+    返回 {项目名}。
+    """
+    involved = set()
+    for _sheet, target, terms, _desc in RELATIONS:
+        involved.add(_norm(target))
+        for key, _coef in terms:
+            involved.add(_norm(key.lstrip('*')))
+
+    out = set()
+    for sheet in getattr(report, 'sheets', []):
+        if sheet.name not in getattr(wb, 'sheetnames', []):
+            continue
+        ws = wb[sheet.name]
+        for name, (row, icol) in sheet.items.items():
+            if _norm(name) in involved:
+                continue
+            try:
+                raw = ws.cell(row, icol).value
+            except Exception:
+                raw = None
+            text = str(raw if raw is not None else name).strip()
+            if text.startswith(('其中', '减：', '减:', '加：', '加:')):
+                out.add(name)
+    return out
