@@ -65,9 +65,10 @@ class Term:
     coef: int          # +1 / -1
     row: int           # 表内 1 基行号
     col: int           # 表内 1 基列号
+    table_idx: int = 0  # 0 = 本表；非 0 表示引用另一张表（跨表勾稽用）
 
     def key(self):
-        return (self.row, self.col)
+        return (self.table_idx, self.row, self.col)
 
 
 @dataclass
@@ -143,22 +144,32 @@ def cell_number(grid, row, col):
     return None
 
 
-def evaluate(item, table_model):
+def evaluate(item, table_model, tables_by_idx=None):
     grid = table_model.ref.grid
+
+    def _val(term):
+        tid = term.table_idx or item.table_idx
+        if tid == item.table_idx:
+            return cell_number(grid, term.row, term.col)
+        if tables_by_idx and tid in tables_by_idx:
+            other = tables_by_idx[tid]
+            return cell_number(other.ref.grid, term.row, term.col)
+        return None
+
     total = 0.0
     for t in item.terms:
-        v = cell_number(grid, t.row, t.col)
+        v = _val(t)
         if v is None:
-            return CheckResult(item, None, None, None, 'skip', '运算项里有非数字')
+            return CheckResult(item, None, None, None, 'skip', '运算项里有非数字或找不到表')
         total += t.coef * v
 
     expected = total
     if item.den:
         den = 0.0
         for t in item.den:
-            v = cell_number(grid, t.row, t.col)
+            v = _val(t)
             if v is None:
-                return CheckResult(item, None, None, None, 'skip', '分母里有非数字')
+                return CheckResult(item, None, None, None, 'skip', '分母里有非数字或找不到表')
             den += t.coef * v
         if abs(den) < 1e-9:
             return CheckResult(item, None, None, None, 'skip', '分母为 0，比例无法计算')
@@ -542,12 +553,13 @@ def _rule_move(tm, checks):
             ))
 
 
-def _rule_pct(tm, checks):
+def _rule_pct(tm, checks, siblings=None):
     """比例勾稽（软提示，四舍五入必然有尾差）。
 
-    两种情形：
+    三种情形：
       · 列名带「计提」→ 计提比例 = 坏账准备 ÷ 账面余额
-      · 其余比例列    → 占比 = 该行金额 ÷ 合计行金额
+      · 前五名/关联方表 → 占比 = 该行金额 ÷ **该项目总额**（取同子项目主表合计，跨表引用）
+      · 其余比例列    → 占比 = 该行金额 ÷ 本表合计行金额
     """
     cols = [c for c in tm.columns if c.is_data]
     ratio_cols = [c for c in cols if c.kind == 'ratio' or c.role == '比例']
@@ -562,9 +574,38 @@ def _rule_pct(tm, checks):
                 return c
         return None
 
+    def base_table(period):
+        """同子项目里能找到"该项目总额"的表：有合计行、有金额列。
+
+        只认出现在本表**之前**的表——成果表是按文档顺序写的，
+        后面的表此刻还没定行号，没法写跨表公式。
+        前五名表通常表头不写期间，这时取主表**最近一期**的合计。
+        """
+        for other in (siblings or []):
+            if other is tm or other.ref.idx >= tm.ref.idx:
+                continue
+            tot = next((r for r in other.rows if r.kind == 'total'), None)
+            if tot is None:
+                continue
+            cols = [c for c in other.columns
+                    if c.is_data and c.role in ('余额', '金额', '价值')]
+            if not cols:
+                continue
+            if period is not None:
+                col = next((c for c in cols if c.period == period), None)
+            else:
+                dated = [c for c in cols if c.period]
+                latest = max((c.period for c in dated), default=None)
+                col = next((c for c in dated if c.period == latest), None)
+            if col is None:
+                continue
+            return other, tot, col
+        return None
+
     total_rows = [r for r in tm.rows if r.kind == 'total']
     tot = total_rows[-1] if total_rows else None
     targets = [r for r in tm.rows if r.kind in ('detail', 'subtotal') and r.label]
+    is_top5 = getattr(tm, 'table_type', '') == 'TOP5'
 
     for rc in ratio_cols:
         period = rc.period
@@ -587,11 +628,32 @@ def _rule_pct(tm, checks):
             continue
 
         base = col_of(period, ('余额', '金额', '价值'))
-        if base is None or tot is None:
+        if base is None:
             continue
-        # 前五名/关联方明细表的「占比」分母是**该项目总额**（来自另一张表），
-        # 不是本表的合计行；按本表合计算会误报，这类跳过，由跨表核对处理。
-        if getattr(tm, 'table_type', '') == 'TOP5':
+
+        if is_top5:
+            # 前五名表的占比分母是"该项目总额"，从同子项目主表的合计行取
+            found = base_table(period)
+            if found is None:
+                continue
+            other, other_tot, other_col = found
+            targets_incl_total = [r for r in tm.rows
+                                  if r.kind in ('detail', 'subtotal', 'total') and r.label]
+            for r in targets_incl_total:
+                checks.append(CheckItem(
+                    rule_id='R-PCT', level='soft',
+                    chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                    label=f'占比 = 该行金额 ÷ {other.sub_item}合计'
+                          f'（{r.label}，分母取自 表#{other.ref.idx}）',
+                    target_row=r.row, target_col=rc.index + 1,
+                    terms=[Term(+1, r.row, base.index + 1)],
+                    den=[Term(+1, other_tot.row, other_col.index + 1,
+                              table_idx=other.ref.idx)],
+                    is_ratio=True, period=period, period_key=rc.period_key,
+                ))
+            continue
+
+        if tot is None:
             continue
         for r in targets:
             checks.append(CheckItem(
@@ -610,25 +672,31 @@ def _rule_pct(tm, checks):
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
+    by_sub = {}
     for tm in tables:
+        by_sub.setdefault((tm.chapter, tm.sub_item), []).append(tm)
+
+    for tm in tables:
+        siblings = by_sub.get((tm.chapter, tm.sub_item), [])
         _rule_v_sum(tm, checks)
         _rule_v_grp(tm, checks)
         _rule_h_sum(tm, checks)
         _rule_balance(tm, checks)
         _rule_move(tm, checks)
-        _rule_pct(tm, checks)
+        _rule_pct(tm, checks, siblings)
     return checks
 
 
 def evaluate_all(checks, tables_by_uid):
     """逐条算，返回 CheckResult 列表。"""
+    idx_map = {tm.ref.idx: tm for tm in tables_by_uid.values()}
     results = []
     for item in checks:
         tm = tables_by_uid.get(item.table_uid)
         if tm is None:
             results.append(CheckResult(item, None, None, None, 'skip', '找不到表'))
             continue
-        results.append(evaluate(item, tm))
+        results.append(evaluate(item, tm, idx_map))
     return results
 
 

@@ -83,7 +83,7 @@ def _column_is_ratio(tm, col_index):
 
 # ---------------------------------------------------------------- 底稿
 
-def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats):
+def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_rows):
     """写一张表，并在勾稽点下方插校验行。返回下一可用行号。"""
     grid = tm.ref.grid
 
@@ -133,21 +133,35 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats):
                 cell.font = F_HEADER
                 cell.fill = FILL_HEADER
         src_to_dst[r_idx] = row_ptr
+        global_rows[(tm.ref.idx, r_idx)] = row_ptr
         row_ptr += 1
 
         # 这一行是勾稽目标 → 紧跟着插校验行
         for item in checks_by_row.get(r_idx, []):
-            row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats)
+            row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
+                                       row_ptr, stats, global_rows)
 
     return row_ptr
 
 
-def _term_expr(item, src_to_dst, terms=None):
-    """把运算项翻译成 Excel 公式里的单元格表达式。"""
-    terms = item.terms if terms is None else terms
+def _cell_ref(term, src_to_dst, global_rows, own_table_idx):
+    """把一个 Term 翻译成单元格地址；跨表引用查全局行号映射。"""
+    tid = term.table_idx or own_table_idx
+    if tid == own_table_idx:
+        row = src_to_dst.get(term.row, term.row)
+    else:
+        row = global_rows.get((tid, term.row))
+        if row is None:
+            return None
+    return f'{get_column_letter(term.col)}{row}'
+
+
+def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
     parts = []
     for i, t in enumerate(terms):
-        ref = f'{get_column_letter(t.col)}{src_to_dst.get(t.row, t.row)}'
+        ref = _cell_ref(t, src_to_dst, global_rows, own_table_idx)
+        if ref is None:
+            return None
         sign = '-' if t.coef < 0 else '+'
         if i == 0:
             parts.append(f'-{ref}' if t.coef < 0 else ref)
@@ -156,9 +170,10 @@ def _term_expr(item, src_to_dst, terms=None):
     return ''.join(parts)
 
 
-def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats):
+def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, global_rows):
     """写一行【勾稽校验】。"""
     res = results_by_key.get(id(item))
+    own_idx = item.table_idx
     target_ref = (f'{get_column_letter(item.target_col)}'
                   f'{src_to_dst.get(item.target_row, item.target_row)}')
 
@@ -168,13 +183,26 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats):
     cell.fill = FILL_FAIL_ROW if (res and res.status == 'fail') else FILL_CHECK_ROW
 
     if item.den:
-        num = _term_expr(item, src_to_dst, item.terms)
-        den = _term_expr(item, src_to_dst, item.den)
-        formula = f'={target_ref}-({num})/({den})'
+        num = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        den = _terms_expr(item, item.den, src_to_dst, global_rows, own_idx)
+        formula = (f'={target_ref}-({num})/({den})'
+                   if num is not None and den is not None else None)
         number_format = '0.00%;[Red]-0.00%;"-"'
     else:
-        formula = f'={target_ref}-({_term_expr(item, src_to_dst)})'
+        expr = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        formula = f'={target_ref}-({expr})' if expr is not None else None
         number_format = FMT_AMOUNT
+
+    if formula is None:
+        # 引用了还没写出去的表（文档顺序在后），无法写活公式
+        target_cell = ws.cell(row_ptr, item.target_col, '（跨表引用不可用）')
+        target_cell.fill = FILL_UNKNOWN
+        target_cell.font = F_CHECK
+        target_cell.border = BORDER
+        for c in range(1, item.target_col + 1):
+            ws.cell(row_ptr, c).border = BORDER
+        stats['skip'] += 1
+        return row_ptr + 1
 
     target_cell = ws.cell(row_ptr, item.target_col, formula)
     target_cell.number_format = number_format
@@ -626,11 +654,12 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                      'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0,
                      'nx_pass': 0, 'nx_fail': 0, 'nx_unmatched': 0,
                      'missing_count': 0})
+    global_rows = {}          # (表号, 源行号) -> 成果表行号，供跨表公式引用
     row_ptr = 4
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
         row_ptr = _write_table(ws, tm, checks_by_table.get(key, {}),
-                               results_by_key, row_ptr, stats)
+                               results_by_key, row_ptr, stats, global_rows)
         row_ptr += 1        # 表间空一行
 
     ws.column_dimensions['A'].width = 46
