@@ -129,6 +129,61 @@ def main():
             bad += 1
     lines.append(f'\n对不上的：{bad} 个')
 
+    # D. 子项必然与主项共用附注编号
+    lines.append('\n## D. 子项与主项是否共用编号\n')
+    book = rr.read_report(args.report)
+    wb = openpyxl.load_workbook(args.report, data_only=True)
+    sub_bad = 0
+    sub_ok = 0
+    for sheet in book.sheets:
+        if sheet.name not in wb.sheetnames:
+            continue
+        ws = wb[sheet.name]
+        # 按栏收集：项目名/行号/缩进/编号
+        col_items = {}
+        for name, (row, icol) in sheet.items.items():
+            raw = ws.cell(row, icol).value
+            if not isinstance(raw, str):
+                continue
+            indent = len(raw) - len(raw.lstrip())
+            # 只有"其中/减：/加："开头的才算子项；光靠缩进会误判（模板行缩进也很深）
+            is_child = raw.strip().startswith(('其中', '减：', '加：'))
+            # 没有任何金额的模板行不参与校验
+            has_money = any(
+                isinstance(ws.cell(row, icol + d).value, (int, float))
+                for d in range(1, 5) if icol + d >= 1)
+            if not has_money:
+                continue
+            note = None
+            for dc in (1, 2, -1, 3):
+                if icol + dc < 1:
+                    continue
+                cell = ws.cell(row, icol + dc).value
+                if isinstance(cell, str) and len(cell) <= 12 and re.search(r'\d', cell):
+                    note = cell.strip()
+                    break
+            col_items.setdefault(icol, []).append((row, name, indent, is_child, note))
+        for icol, items in col_items.items():
+            items.sort()
+            last_parent = None
+            for row, name, indent, is_child, note in items:
+                if not is_child:
+                    last_parent = (name, note)
+                    continue
+                if last_parent is None:
+                    continue
+                pname, pnote = last_parent
+                if note and pnote:
+                    if cn_to_int(note) == cn_to_int(pnote):
+                        sub_ok += 1
+                    else:
+                        lines.append(f'- {sheet.name}「{name}」{note} ≠ 主项「{pname}」{pnote}')
+                        sub_bad += 1
+                elif not note:
+                    lines.append(f'- {sheet.name}「{name}」没编号，主项「{pname}」是 {pnote}')
+                    sub_bad += 1
+    lines.append(f'\n一致 {sub_ok} 个，不一致/缺失 {sub_bad} 个')
+
     # C. Word 有、报表没引用
     used = {t[5] for t in notes_rows if t[5] is not None}
     lines.append('\n## C. Word 有编号但报表没引用的小节\n')
