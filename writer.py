@@ -101,14 +101,15 @@ def _period_slots(cross, tb_checks, limit=3):
     return periods[:limit]
 
 
-def _col_map(periods):
+def _col_map(periods, base=None):
     """每期只留一列「差额」公式，原始数字直接在公式里引用「原始数据」工作表。"""
+    start = base or REPORT_COL_START
     report = {}
     tb = {}
     for i, p in enumerate(periods):
-        report[p] = REPORT_COL_START + i
-        base = REPORT_COL_START + len(periods) + TB_COL_START_OFFSET
-        tb[p] = base + i
+        report[p] = start + i
+        tb_base = start + len(periods) + TB_COL_START_OFFSET
+        tb[p] = tb_base + i
     return report, tb
 
 
@@ -135,6 +136,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     grid = tm.ref.grid
 
     # 科目名放在第一格（与 Word 里的标题一致、显眼），技术信息放右边小字
+    title_row = row_ptr
     title_cell = ws.cell(row_ptr, 1, tm.sub_item)
     title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
     title_cell.fill = FILL_TABLE_TITLE
@@ -179,15 +181,10 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         hc.fill = FILL_TABLE_TITLE
         hc.alignment = Alignment(horizontal='center')
 
-    # 报表勾稽 / TB 勾稽的列也**按这张表自己的宽度**往外排，
-    # 不锁定固定列——表宽超出时不会覆盖
-    used_max = max([tm.ref.cols] + list(check_cols.values()))
-    col_cursor = used_max + 2
-    periods = list(report_map.keys())
-    report_map = {pp: col_cursor + i for i, pp in enumerate(periods)}
-    col_cursor += len(periods) + 1
-    tb_map = {pp: col_cursor + i for i, pp in enumerate(periods)}
+    # 报表勾稽列**所有表统一**（便于纵向对比），
+    # 起点由最宽的表决定，表再宽也不会覆盖
 
+    periods = list(report_map.keys())
     has_tb_here = any(k[0] == tm.ref.idx for k in (tb_by_row or {}))
     for pp in periods:
         hc = ws.cell(row_ptr - 1, report_map[pp], f'报表差额 {pp}')
@@ -252,9 +249,12 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                 cell_diff.number_format = FMT_AMOUNT
                 cell_diff.border = BORDER
                 cell_diff.font = F_REPORT
-                cell_diff.fill = (FILL_PASS if cc.status == 'pass'
-                                  else FILL_FAIL_TARGET if cc.status == 'fail'
-                                  else FILL_UNKNOWN)
+                cell_diff.fill = FILL_PASS
+                if cc.status == 'fail':
+                    cell_diff.font = Font(name='Consolas', size=9, bold=True,
+                                          color='C00000')
+                elif cc.status != 'pass':
+                    cell_diff.font = Font(name='Consolas', size=9, color='B25E00')
                 stats['report_cells'] += 1
 
         for tc in tb_by_row.get((tm.ref.idx, r_idx), []):
@@ -285,6 +285,24 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                 # 纵向勾稽：插一行，只留公式，不写说明文字
                 row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
                                            row_ptr, stats, global_rows, check_rows)
+
+    # 有差异的表：标题行标红，一眼能扫到哪张表有问题
+    try:
+        table_failed = any(r.status == 'fail'
+                           for r in results_by_key.values()
+                           if r.item.table_idx == tm.ref.idx)
+    except Exception:
+        table_failed = False
+    if table_failed:
+        span = max(3, tm.ref.cols)
+        for c in range(1, span + 1):
+            cell = ws.cell(title_row, c)
+            cell.fill = FILL_FAIL_TARGET
+        tc = ws.cell(title_row, 1)
+        tc.font = Font(name='微软雅黑', size=11, bold=True, color='C00000')
+        ic = ws.cell(title_row, max(3, tm.ref.cols))
+        if ic.value:
+            ic.font = Font(name='微软雅黑', size=8, color='C00000')
 
     return row_ptr, note_row_map
 
@@ -329,15 +347,17 @@ def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
     cell.value = formula
     cell.number_format = fmt
     cell.border = BORDER
+    # 公式格一律浅绿：一眼能看出"这里做了公式勾稽"
+    cell.fill = FILL_PASS
     if res.status == 'unclear':
-        cell.fill = FILL_UNKNOWN
         stats['unclear'] += 1
+        cell.font = Font(name='微软雅黑', size=9, color='B25E00')
     elif res.status == 'pass':
-        cell.fill = FILL_PASS
         stats['pass'] += 1
+        cell.font = Font(name='微软雅黑', size=9, color='375623')
     else:
-        cell.fill = FILL_FAIL_TARGET
         stats['fail'] += 1
+        cell.font = Font(name='微软雅黑', size=9, bold=True, color='C00000')
 
 
 def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
@@ -366,7 +386,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     label = ''      # 不写说明文字：差异点开公式就能看明白
     cell = ws.cell(row_ptr, 1, label)
     cell.font = F_CHECK
-    cell.fill = FILL_FAIL_ROW if (res and res.status == 'fail') else FILL_CHECK_ROW
+    cell.fill = FILL_PASS      # 公式格统一浅绿
 
     if item.den:
         num = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
@@ -398,19 +418,20 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         target_cell.fill = FILL_UNKNOWN
         stats['skip'] += 1
     elif res.status == 'unclear':
-        target_cell.fill = FILL_UNKNOWN
+        target_cell.fill = FILL_PASS
+        target_cell.font = Font(name='Consolas', size=9, color='B25E00')
         for c in range(1, item.target_col + 1):
             ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
-        ws.cell(row_ptr, 1).fill = FILL_UNKNOWN
         stats['unclear'] += 1
     elif res.status == 'pass':
         target_cell.fill = FILL_PASS
         stats['pass'] += 1
     else:
-        target_cell.fill = FILL_FAIL_TARGET
+        # 有差异：公式格仍是绿的（表示"这里做了公式"），数字用红字标出
+        target_cell.fill = FILL_PASS
+        target_cell.font = Font(name='Consolas', size=9, bold=True, color='C00000')
         for c in range(1, item.target_col + 1):
-            ws.cell(row_ptr, c).fill = FILL_FAIL_ROW
-        ws.cell(row_ptr, item.target_col).fill = FILL_FAIL_TARGET
+            ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
         stats['fail'] += 1
 
     for c in range(1, item.target_col + 1):
@@ -1049,7 +1070,11 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     stats['missing_count'] = len(disclosure or [])
 
     periods = _period_slots(cross, tb_checks)
-    report_map, tb_map = _col_map(periods)
+    # 统一列起点：按最宽的表 + 横向勾稽列（最多 5 个）+ 余量算，
+    # 这样所有表的报表勾稽列在同一列，又不会跟表体撞上
+    widest = max([t.ref.cols for t in tables] + [8])
+    _BASE = widest + 2 + 5 + 2
+    report_map, tb_map = _col_map(periods, base=_BASE)
 
     # 右侧表头改为每张表自己写（列位置随表宽浮动，不再锁定固定列）
 
