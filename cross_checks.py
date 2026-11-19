@@ -437,9 +437,31 @@ def build_cross_checks(model, tables, report, get_value=None):
 
             # 模糊匹配代表行：名字对不上时，用**数值**去验证
             # （Word 里每个带编号的项目一定对应一个报表项目，两边金额应当相等）
+            # 先用学到的模糊关键字挑（快且可解释）；
+            # 挑不到再用数值猜，猜中了把语义沉淀成规则
+            try:
+                import learn_rules
+                learned = learn_rules.match_row(
+                    [r for r in tm.rows
+                     if r.kind in ('detail', 'subtotal', 'total') and r.label],
+                    'row', matched_name or sub.name)
+                if learned is not None:
+                    tot = learned
+            except Exception:
+                pass
             if get_value is not None:
-                tot = _row_by_value(tm, tot, sheet, item_row, item_col,
-                                    get_value) or tot
+                guessed = _row_by_value(tm, tot, sheet, item_row, item_col,
+                                        get_value)
+                if guessed is not None:
+                    if guessed is not tot:
+                        try:
+                            import learn_rules
+                            learn_rules.learn('row',
+                                              matched_name or sub.name,
+                                              guessed.label)
+                        except Exception:
+                            pass
+                    tot = guessed
 
             per_period = {}
             for col in tm.columns:
