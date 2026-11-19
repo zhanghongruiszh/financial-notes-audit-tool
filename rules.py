@@ -872,6 +872,67 @@ def _rule_prov_move(tm, checks):
         ))
 
 
+def _rule_ecl(tm, checks):
+    """三阶段预期信用损失变动表（行向）：
+
+        期末余额 = 期初余额 + 期初余额在本期 + 本期计提
+                   − 本期转回 − 本期转销 − 本期核销 + 其他变动
+
+    这是模板里出现最多的一种坏账表（81 张、3 份模板），特点是
+    「期初余额 / 期初余额在本期 / --转入第二阶段 … / 本期计提 … / 期末余额」竖着排。
+    """
+    def find(*words, exclude=(), startswith=None):
+        for r in tm.rows:
+            lab = (r.label or '').strip()
+            if not lab:
+                continue
+            if startswith and not lab.startswith(startswith):
+                continue
+            if all(w in lab for w in words) and not any(e in lab for e in exclude):
+                return r
+        return None
+
+    beg = find('期初余额', exclude=('在本期',))
+    end = find('期末余额')
+    if beg is None or end is None:
+        return
+
+    move = find('期初余额在本期')
+    prov = find('计提', startswith='本期')
+    back = find('转回', startswith='本期')
+    write = find('转销', startswith='本期')
+    cancel = find('核销', startswith='本期')
+    other = find('其他变动')
+    if not any((move, prov, back, write, cancel)):
+        return
+
+    only_total = len({r.row for r in (beg, end, move, prov, back, write, cancel, other)
+                      if r is not None}) <= 4
+
+    for c in _data_columns(tm):
+        terms = [Term(+1, beg.row, c.index + 1)]
+        if move is not None:
+            terms.append(Term(+1, move.row, c.index + 1))
+        if prov is not None:
+            terms.append(Term(+1, prov.row, c.index + 1))
+        if back is not None:
+            terms.append(Term(-1, back.row, c.index + 1))
+        if write is not None:
+            terms.append(Term(-1, write.row, c.index + 1))
+        if cancel is not None:
+            terms.append(Term(-1, cancel.row, c.index + 1))
+        if other is not None:
+            terms.append(Term(+1, other.row, c.index + 1))
+        checks.append(CheckItem(
+            rule_id='R-ECL', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label=f'期末 = 期初 + 期初在本期 + 计提 − 转回 − 转销 − 核销'
+                  f'（{c.header_text or "列"}）',
+            target_row=end.row, target_col=c.index + 1,
+            terms=terms,
+        ))
+
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
@@ -888,6 +949,7 @@ def build_checks(tables):
         _rule_move(tm, checks)
         _rule_block_move(tm, checks)
         _rule_prov_move(tm, checks)
+        _rule_ecl(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
 
