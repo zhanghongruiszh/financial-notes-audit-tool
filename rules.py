@@ -398,33 +398,50 @@ def _rule_v_grp(tm, checks):
 
 
 def _rule_h_sum(tm, checks):
-    """合计列 = 其余数据列之和。
+    """列向加减：合计列 = 其余数据列之和。
 
-    只认「最末一级表头就是 合计/总计/小计」的列。
-    不能只看表头里含"合计"——像「占应收账款合计的比例」这种列也含"合计"，
-    但它是比例列，不是加总列。
+    分两种情况，避免重复计算：
+      · 表里有「小计」列 → 合计列 = 各小计列之和（不再把明细列再加一遍）
+      · 没有小计列      → 合计列 = 其余明细列之和
+
+    只认「最末一级表头就是 合计/总计/小计」的列。不能只看表头里含"合计"——
+    像「占应收账款合计的比例」这种列也含"合计"，但它是比例列，不是加总列。
     """
-    total_words = ('合计', '总计', '小计')
-    total_cols = [c for c in tm.columns
-                  if c.is_data and c.path and c.path[-1].strip() in total_words]
+    total_words = ('合计', '总计')
+    sub_words = ('小计',)
+
+    def leaf(c):
+        return (c.path[-1].strip() if c.path else '')
+
+    total_cols = [c for c in tm.columns if c.is_data and leaf(c) in total_words]
     if not total_cols:
         return
-    other_cols = [c for c in _data_columns(tm)
-                  if c not in total_cols
-                  and not (c.path and c.path[-1].strip() in total_words)]
-    if len(other_cols) < 2:
+    sub_cols = [c for c in tm.columns if c.is_data and leaf(c) in sub_words]
+
+    if sub_cols:
+        terms_cols = [c for c in sub_cols if c not in total_cols]
+        label = f'合计列 = {len(terms_cols)} 个小计列之和'
+    else:
+        terms_cols = [c for c in _data_columns(tm)
+                      if c not in total_cols
+                      and leaf(c) not in total_words
+                      and leaf(c) not in sub_words]
+        label = f'合计列 = 其余 {len(terms_cols)} 列之和'
+
+    if len(terms_cols) < 1:
         return
+
     for r in tm.rows:
-        if r.kind not in ('detail', 'total'):
+        if r.kind not in ('detail', 'total', 'subtotal'):
             continue
         if not r.label:
             continue
         for tc in total_cols:
-            terms = [Term(+1, r.row, c.index + 1) for c in other_cols]
+            terms = [Term(+1, r.row, c.index + 1) for c in terms_cols]
             checks.append(CheckItem(
                 rule_id='H-SUM', level='hard',
                 chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
-                label=f'合计列 = 其余 {len(other_cols)} 列之和（{r.label}）',
+                label=f'{label}（{r.label}）',
                 target_row=r.row, target_col=tc.index + 1,
                 terms=terms,
             ))

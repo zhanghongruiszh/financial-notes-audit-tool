@@ -135,7 +135,8 @@ def _write_right_headers(ws, row, periods, report_map, tb_map, has_tb):
 # ---------------------------------------------------------------- 底稿
 
 def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
-                 global_rows, report_by_row, tb_by_row, report_map, tb_map):
+                 global_rows, report_by_row, tb_by_row, report_map, tb_map, raw=None,
+                 check_rows=None):
     grid = tm.ref.grid
 
     ws.cell(row_ptr, 1, f'{tm.chapter} ｜ {tm.sub_item} ｜ 表#{tm.ref.idx} '
@@ -162,6 +163,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         row_ptr += 1
 
     src_to_dst = {}
+    note_row_map = {}
     for r_idx, row in enumerate(grid, 1):
         for c_idx, cellinfo in enumerate(row, 1):
             if cellinfo['m'] != ' ':
@@ -182,13 +184,15 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                 cell.fill = FILL_HEADER
         src_to_dst[r_idx] = row_ptr
         global_rows[(tm.ref.idx, r_idx)] = row_ptr
+        note_row_map[(tm.ref.idx, r_idx)] = row_ptr
 
         # 右侧：报表勾稽 / TB 核对（写在同一行的右侧列）
         for cc in report_by_row.get((tm.ref.idx, r_idx), []):
             if cc.period in report_map:
                 rc, dc = report_map[cc.period]
                 if cc.report_value is not None:
-                    cell = ws.cell(row_ptr, rc, cc.report_value)
+                    ref = raw.ref(cc.sheet, cc.rows, cc.cols) if raw else None
+                    cell = ws.cell(row_ptr, rc, f'={ref}' if ref else cc.report_value)
                     cell.font = F_REPORT
                     cell.number_format = FMT_AMOUNT
                     cell.border = BORDER
@@ -220,7 +224,8 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             if tc.period in tb_map:
                 tcol, tdcol = tb_map[tc.period]
                 if tc.tb_value is not None:
-                    cell = ws.cell(row_ptr, tcol, tc.tb_value)
+                    ref = raw.ref(tc.tb_sheet, tc.tb_rows, tc.tb_cols) if raw else None
+                    cell = ws.cell(row_ptr, tcol, f'={ref}' if ref else tc.tb_value)
                     cell.font = F_REPORT
                     cell.number_format = FMT_AMOUNT
                     cell.border = BORDER
@@ -238,9 +243,9 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
 
         for item in checks_by_row.get(r_idx, []):
             row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
-                                       row_ptr, stats, global_rows)
+                                       row_ptr, stats, global_rows, check_rows)
 
-    return row_ptr
+    return row_ptr, note_row_map
 
 
 def _cell_ref(term, src_to_dst, global_rows, own_table_idx):
@@ -268,11 +273,14 @@ def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
     return ''.join(parts)
 
 
-def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, global_rows):
+def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, global_rows,
+                     check_rows=None):
     res = results_by_key.get(id(item))
     own_idx = item.table_idx
     target_ref = (f'{get_column_letter(item.target_col)}'
                   f'{src_to_dst.get(item.target_row, item.target_row)}')
+    if check_rows is not None:
+        check_rows[id(item)] = row_ptr
 
     label = f'【勾稽校验】{item.label}'
     cell = ws.cell(row_ptr, 1, label)
@@ -323,6 +331,70 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     return row_ptr + 1
 
 
+# ---------------------------------------------------------------- 原始数据
+
+class RawData:
+    """把报表 / TB 的数值贴进 `原始数据` 工作表，并记住每张表的行偏移。
+
+    这样底稿右侧的「报表数」「TB数」可以写成**引用公式**（真链接），
+    点开就能看到数据来自 `原始数据` 的哪一格，同时不增加太多工作表。
+    """
+
+    SHEET_NAME = '原始数据'
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.row = 1
+        self.offsets = {}
+
+    def add(self, name, src_ws, max_rows=260, max_cols=32):
+        ws = self.ws
+        ws.cell(self.row, 1, f'【{name}】').font = F_TABLE_TITLE
+        ws.cell(self.row, 1).fill = FILL_TABLE_TITLE
+        self.row += 1
+        self.offsets[name] = self.row - 1
+        n_rows = min(src_ws.max_row, max_rows)
+        n_cols = min(src_ws.max_column, max_cols)
+        for r in range(1, n_rows + 1):
+            for c in range(1, n_cols + 1):
+                v = src_ws.cell(r, c).value
+                if v is None:
+                    continue
+                cell = ws.cell(self.offsets[name] + r, c, v)
+                if isinstance(v, float):
+                    cell.number_format = FMT_AMOUNT
+        self.row = self.offsets[name] + n_rows + 3
+
+    def ref(self, name, row, col):
+        off = self.offsets.get(name)
+        if off is None:
+            return None
+        return f"'{self.SHEET_NAME}'!{get_column_letter(col)}{off + row}"
+
+
+def _build_raw_data(wb, report, tb_xlsx, tb_sheet_names):
+    """建 原始数据 工作表，返回 RawData 句柄。"""
+    ws = wb.create_sheet(RawData.SHEET_NAME)
+    raw = RawData(ws)
+    import openpyxl
+    if report is not None and getattr(report, 'path', None):
+        try:
+            src = openpyxl.load_workbook(report.path, data_only=True)
+            for name in src.sheetnames:
+                raw.add(name, src[name])
+        except Exception:
+            pass
+    if tb_xlsx:
+        try:
+            src = openpyxl.load_workbook(tb_xlsx, data_only=True)
+            for name in (tb_sheet_names or []):
+                if name in src.sheetnames:
+                    raw.add(name, src[name], max_rows=120, max_cols=24)
+        except Exception:
+            pass
+    return raw
+
+
 # ---------------------------------------------------------------- 汇总表
 
 def _block_header(ws, row, title, headers, widths=None):
@@ -340,7 +412,8 @@ def _block_header(ws, row, title, headers, widths=None):
 
 def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
                          tb_count, nn_count, nx_count, disclosure_count,
-                         source_note=''):
+                         source_note='', check_rows=None, note_rows=None,
+                         cross=None, tb_checks=None, note_cross=None):
     ws.cell(1, 1, '勾稽汇总表').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     r = 3
 
@@ -389,27 +462,90 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
     ws.cell(r, 2, disclosure_count).font = F_BODY
     r += 2
 
-    # 二、差异清单（内部勾稽）
-    fails = [x for x in results if x.status == 'fail']
-    r = _block_header(ws, r, '二、附注内部勾稽差异清单',
-                      ['序号', '章', '子项目', '表号', '规则', '校验说明', '期间',
-                       '期望值', '实际值', '差额'])
-    for n, res in enumerate(fails, 1):
+    # 二、差异明细（带跳转链接，点一下跳到底稿对应位置）
+    r = _block_header(ws, r, '二、差异明细（点「定位」可跳转到勾稽底稿对应位置）',
+                      ['序号', '类型', '子项目 / 说明', '期间', '期望值', '实际值',
+                       '差额', '定位'])
+    from openpyxl.worksheet.hyperlink import Hyperlink
+
+    def add_link(row, col, target_row):
+        if not target_row:
+            return
+        cell = ws.cell(row, col, f'勾稽底稿!A{target_row}')
+        cell.font = Font(name='微软雅黑', size=9, color='0563C1', underline='single')
+        cell.hyperlink = Hyperlink(ref=cell.coordinate,
+                                   location=f"'勾稽底稿'!A{target_row}")
+
+    n = 0
+    # 内部勾稽差异
+    for res in [x for x in results if x.status == 'fail']:
         it = res.item
+        n += 1
         period = str(it.period) if it.period else (it.period_key or '')
-        vals = [n, it.chapter, it.sub_item, it.table_idx, it.rule_id, it.label,
-                period, res.expected, res.actual, res.diff]
+        vals = [n, '附注内部勾稽', f'{it.sub_item}：{it.label}', period,
+                res.expected, res.actual, res.diff, '']
         for i, v in enumerate(vals, 1):
             cell = ws.cell(r, i, v)
             cell.font = F_BODY
             cell.border = BORDER
-            if i in (8, 9, 10) and isinstance(v, (int, float)):
+            if i in (5, 6, 7) and isinstance(v, (int, float)):
                 cell.number_format = ('0.00%;[Red]-0.00%' if getattr(it, 'is_ratio', False)
                                       else FMT_AMOUNT)
-        ws.cell(r, 10).fill = FILL_FAIL_TARGET
+        ws.cell(r, 7).fill = FILL_FAIL_TARGET
+        add_link(r, 8, (check_rows or {}).get(id(it)))
         r += 1
-    if not fails:
-        ws.cell(r, 1, '（无差异）').font = F_BODY
+
+    # 报表勾稽差异
+    for cc in [x for x in (cross or []) if x.status == 'fail']:
+        n += 1
+        vals = [n, '报表勾稽', f'{cc.sub_item}（{cc.sheet} {cc.rows}行）',
+                str(cc.period) if cc.period else '', cc.report_value, cc.note_value,
+                cc.diff, '']
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+            if i in (5, 6, 7) and isinstance(v, (int, float)):
+                cell.number_format = FMT_AMOUNT
+        ws.cell(r, 7).fill = FILL_FAIL_TARGET
+        add_link(r, 8, (note_rows or {}).get((cc.note_table, cc.note_row)))
+        r += 1
+
+    # TB 核对差异
+    for tc in [x for x in (tb_checks or []) if x.status == 'fail']:
+        n += 1
+        vals = [n, 'TB现金流核对', f'{tc.sub_item}：{tc.label}',
+                str(tc.period) if tc.period else '', tc.tb_value, tc.note_value,
+                tc.diff, '']
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+            if i in (5, 6, 7) and isinstance(v, (int, float)):
+                cell.number_format = FMT_AMOUNT
+        ws.cell(r, 7).fill = FILL_FAIL_TARGET
+        add_link(r, 8, (note_rows or {}).get((tc.table_idx, tc.note_row)))
+        r += 1
+
+    # 附注内跨表差异
+    for xc in [x for x in (note_cross or []) if x.status == 'fail']:
+        n += 1
+        vals = [n, '附注内跨表', f'{xc.sub_a}：{xc.note}',
+                str(xc.period) if xc.period else '', xc.value_a, xc.value_b,
+                xc.diff, '']
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+            if i in (5, 6, 7) and isinstance(v, (int, float)):
+                cell.number_format = FMT_AMOUNT
+        ws.cell(r, 7).fill = FILL_FAIL_TARGET
+        c = ws.cell(r, 8, '见「完整性」第三部分')
+        c.font = Font(name='微软雅黑', size=9, color='666666')
+        r += 1
+
+    if n == 0:
+        ws.cell(r, 1, '（全部通过，无差异）').font = F_BODY
         r += 1
     r += 1
 
@@ -568,6 +704,10 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     ws = wb.active
     ws.title = '勾稽底稿'
 
+    # 原始数据（报表 + TB）先贴好，底稿右侧才能写成引用
+    tb_sheet_names = sorted({t.tb_sheet for t in (tb_checks or []) if t.tb_sheet})
+    raw = _build_raw_data(wb, report, tb_xlsx, tb_sheet_names)
+
     ws.cell(1, 1, '财务报表附注勾稽底稿').font = Font(name='微软雅黑', size=14, bold=True,
                                               color='1F497D')
     ws.cell(2, 1, '绿色=已平（差额≤0.01）　深红=有差异　淡红底=该条有差异　'
@@ -632,12 +772,16 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
         tb_by_row.setdefault((tc.table_idx, tc.note_row), []).append(tc)
 
     global_rows = {}
+    note_rows = {}
+    check_rows = {}
     row_ptr = 5
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
-        row_ptr = _write_table(ws, tm, checks_by_table.get(key, {}),
-                               results_by_key, row_ptr, stats, global_rows,
-                               report_by_row, tb_by_row, report_map, tb_map)
+        row_ptr, nrm = _write_table(ws, tm, checks_by_table.get(key, {}),
+                                    results_by_key, row_ptr, stats, global_rows,
+                                    report_by_row, tb_by_row, report_map, tb_map,
+                                    raw, check_rows)
+        note_rows.update(nrm)
         row_ptr += 1
 
     ws.column_dimensions['A'].width = 46
@@ -656,7 +800,9 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     _write_summary_sheet(wb.create_sheet('汇总表'), stats, results, model, tables,
                          len(cross or []), len(tb_checks or []),
                          len(note_no_checks or []), len(note_cross or []),
-                         len(disclosure or []), source_note=source_note)
+                         len(disclosure or []), source_note=source_note,
+                         check_rows=check_rows, note_rows=note_rows,
+                         cross=cross, tb_checks=tb_checks, note_cross=note_cross)
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
                            note_no_checks, note_cross)
 
