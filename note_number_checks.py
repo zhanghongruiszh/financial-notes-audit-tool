@@ -123,6 +123,9 @@ def build_note_no_checks(report_path, model):
                 item_name = cell_item.value
                 if not isinstance(item_name, str) or not item_name.strip():
                     continue
+                # 这些项目本来就不该挂附注号（合计行/子项），不参与核对
+                if rn.is_no_note_item(item_name):
+                    continue
                 number = rn._match_number(mapping, item_name)
                 if number is None:
                     continue

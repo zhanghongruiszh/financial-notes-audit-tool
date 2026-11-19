@@ -62,6 +62,26 @@ def _candidates(label):
     return out
 
 
+def _col_date(col, cf):
+    """表头是「本期发生额/上期发生额」这种没有具体日期的，按语义对到 TB 的期间。
+
+    TB 现金流量表一般有两年（本年/上年）：本期对最近一期、上期对上一期。
+    """
+    if col.period:
+        return col.period
+    periods = sorted(cf.periods.keys(), reverse=True)
+    if not periods:
+        return None
+    text = (col.header_text or '') + (col.period_key or '')
+    if any(w in text for w in ('本期', '本年', '期末')):
+        idx = 0
+    elif any(w in text for w in ('上期', '上年', '期初', '年初')):
+        idx = 1
+    else:
+        return None
+    return periods[idx] if idx < len(periods) else None
+
+
 def build_tb_checks(model, tables, tb_sheets):
     cf = tb_reader.find_cf(tb_sheets, prefer='indirect')
     if cf is None:
@@ -77,7 +97,10 @@ def build_tb_checks(model, tables, tb_sheets):
             if any(k in row.label for k in SKIP_LABELS):
                 continue
             for col in tm.columns:
-                if not col.is_data or not col.period:
+                if not col.is_data:
+                    continue
+                date = _col_date(col, cf)
+                if date is None:
                     continue
                 note_val = rules.cell_number(tm.ref.grid, row.row, col.index + 1)
                 if note_val is None:
@@ -85,7 +108,7 @@ def build_tb_checks(model, tables, tb_sheets):
 
                 chk = TbCheck(
                     chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
-                    label=row.label, period=col.period, note_value=note_val,
+                    label=row.label, period=date, note_value=note_val,
                     note_ref=f'表#{tm.ref.idx} R{row.row} C{col.index + 1}',
                     note_row=row.row, note_col=col.index + 1,
                 )
@@ -101,7 +124,7 @@ def build_tb_checks(model, tables, tb_sheets):
                     out.append(chk)
                     continue
 
-                tb_col = cf.value_col(col.period)
+                tb_col = cf.value_col(date)
                 chk.tb_sheet = cf.name
                 chk.tb_rows = tb_row
                 if tb_col is None:

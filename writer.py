@@ -102,34 +102,29 @@ def _period_slots(cross, tb_checks, limit=3):
 
 
 def _col_map(periods):
-    """{期间: (报表数列, 差额列)} 和 {期间: (TB数列, TB差额列)}"""
+    """每期只留一列「差额」公式，原始数字直接在公式里引用「原始数据」工作表。"""
     report = {}
     tb = {}
     for i, p in enumerate(periods):
-        report[p] = (REPORT_COL_START + i * 2, REPORT_COL_START + i * 2 + 1)
-        base = REPORT_COL_START + len(periods) * 2 + TB_COL_START_OFFSET
-        tb[p] = (base + i * 2, base + i * 2 + 1)
+        report[p] = REPORT_COL_START + i
+        base = REPORT_COL_START + len(periods) + TB_COL_START_OFFSET
+        tb[p] = base + i
     return report, tb
 
 
 def _write_right_headers(ws, row, periods, report_map, tb_map, has_tb):
     for p in periods:
-        rc, dc = report_map[p]
-        for col, text, fill in ((rc, f'报表数 {p}', FILL_REPORT_HDR),
-                                (dc, f'差额 {p}', FILL_REPORT_HDR)):
-            c = ws.cell(row, col, text)
+        c = ws.cell(row, report_map[p], f'报表差额 {p}')
+        c.font = F_REPORT
+        c.fill = FILL_REPORT_HDR
+        c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+        if has_tb:
+            c = ws.cell(row, tb_map[p], f'TB差额 {p}')
             c.font = F_REPORT
-            c.fill = fill
+            c.fill = FILL_TB_HDR
             c.alignment = Alignment(horizontal='center')
             c.border = BORDER
-        if has_tb:
-            tc, tdc = tb_map[p]
-            for col, text in ((tc, f'TB数 {p}'), (tdc, f'TB差额 {p}')):
-                c = ws.cell(row, col, text)
-                c.font = F_REPORT
-                c.fill = FILL_TB_HDR
-                c.alignment = Alignment(horizontal='center')
-                c.border = BORDER
 
 
 # ---------------------------------------------------------------- 底稿
@@ -139,11 +134,16 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                  check_rows=None, anomalies=None):
     grid = tm.ref.grid
 
-    ws.cell(row_ptr, 1, f'{tm.chapter} ｜ {tm.sub_item} ｜ 表#{tm.ref.idx} '
-                        f'（{tm.ref.rows}行×{tm.ref.cols}列）'
-                        f'｜ {tm.table_type_name or "未分类"}')
-    ws.cell(row_ptr, 1).font = F_TABLE_TITLE
-    ws.cell(row_ptr, 1).fill = FILL_TABLE_TITLE
+    # 科目名放在第一格（与 Word 里的标题一致、显眼），技术信息放右边小字
+    title_cell = ws.cell(row_ptr, 1, tm.sub_item)
+    title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+    title_cell.fill = FILL_TABLE_TITLE
+    info_cell = ws.cell(row_ptr, max(3, tm.ref.cols),
+                        f'表#{tm.ref.idx}　{tm.ref.rows}行×{tm.ref.cols}列　'
+                        f'{tm.table_type_name or "未分类"}')
+    info_cell.font = Font(name='微软雅黑', size=8, color='808080')
+    info_cell.fill = FILL_TABLE_TITLE
+    info_cell.alignment = Alignment(horizontal='right')
     for c in range(2, max(3, tm.ref.cols) + 1):
         ws.cell(row_ptr, c).fill = FILL_TABLE_TITLE
     row_ptr += 1
@@ -192,57 +192,47 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         global_rows[(tm.ref.idx, r_idx)] = row_ptr
         note_row_map[(tm.ref.idx, r_idx)] = row_ptr
 
-        # 右侧：报表勾稽 / TB 核对（写在同一行的右侧列）
+        # 右侧：只写差额公式，原始数字直接在公式里引用「原始数据」
         for cc in report_by_row.get((tm.ref.idx, r_idx), []):
             if cc.period in report_map:
-                rc, dc = report_map[cc.period]
-                if cc.report_value is not None:
-                    ref = raw.ref(cc.sheet, cc.rows, cc.cols) if raw else None
-                    cell = ws.cell(row_ptr, rc, f'={ref}' if ref else cc.report_value)
-                    cell.font = F_REPORT
-                    cell.number_format = FMT_AMOUNT
-                    cell.border = BORDER
-                    # 附注侧可能是"余额−准备"，按 terms 拼出来，不能只取一格
-                    parts = []
-                    for i, (rr, cc0, coef) in enumerate(
-                            cc.note_terms or [(cc.note_row, cc.note_col, 1)]):
-                        ref = f'{get_column_letter(cc0)}{row_ptr}'
-                        if i == 0:
-                            parts.append(f'-{ref}' if coef < 0 else ref)
-                        else:
-                            parts.append(('-' if coef < 0 else '+') + ref)
-                    expr = ''.join(parts)
-                    cell_diff = ws.cell(row_ptr, dc,
-                                        f'=({expr})-{get_column_letter(rc)}{row_ptr}')
-                    cell_diff.number_format = FMT_AMOUNT
-                    cell_diff.border = BORDER
-                    cell_diff.fill = (FILL_PASS if cc.status == 'pass'
-                                      else FILL_FAIL_TARGET if cc.status == 'fail'
-                                      else FILL_UNKNOWN)
+                dc = report_map[cc.period]
+                raw_ref = raw.ref(cc.sheet, cc.rows, cc.cols) if raw else None
+                parts = []
+                for i, (rr, cc0, coef) in enumerate(
+                        cc.note_terms or [(cc.note_row, cc.note_col, 1)]):
+                    ref = f'{get_column_letter(cc0)}{row_ptr}'
+                    if i == 0:
+                        parts.append(f'-{ref}' if coef < 0 else ref)
+                    else:
+                        parts.append(('-' if coef < 0 else '+') + ref)
+                expr = ''.join(parts)
+                if raw_ref:
+                    formula = f'=({expr})-{raw_ref}'
                 else:
-                    cell = ws.cell(row_ptr, rc, '（未匹配）')
-                    cell.font = F_REPORT
-                    cell.fill = FILL_UNKNOWN
-                    cell.border = BORDER
+                    formula = f'=({expr})-{cc.report_value}'
+                cell_diff = ws.cell(row_ptr, dc, formula)
+                cell_diff.number_format = FMT_AMOUNT
+                cell_diff.border = BORDER
+                cell_diff.font = F_REPORT
+                cell_diff.fill = (FILL_PASS if cc.status == 'pass'
+                                  else FILL_FAIL_TARGET if cc.status == 'fail'
+                                  else FILL_UNKNOWN)
                 stats['report_cells'] += 1
 
         for tc in tb_by_row.get((tm.ref.idx, r_idx), []):
             if tc.period in tb_map:
-                tcol, tdcol = tb_map[tc.period]
-                if tc.tb_value is not None:
-                    ref = raw.ref(tc.tb_sheet, tc.tb_rows, tc.tb_cols) if raw else None
-                    cell = ws.cell(row_ptr, tcol, f'={ref}' if ref else tc.tb_value)
-                    cell.font = F_REPORT
-                    cell.number_format = FMT_AMOUNT
-                    cell.border = BORDER
-                    note_ref = f'{get_column_letter(tc.note_col)}{row_ptr}'
-                    cell_diff = ws.cell(row_ptr, tdcol,
-                                        f'={note_ref}-{get_column_letter(tcol)}{row_ptr}')
-                    cell_diff.number_format = FMT_AMOUNT
-                    cell_diff.border = BORDER
-                    cell_diff.fill = (FILL_PASS if tc.status == 'pass'
-                                      else FILL_FAIL_TARGET if tc.status == 'fail'
-                                      else FILL_UNKNOWN)
+                tdcol = tb_map[tc.period]
+                raw_ref = raw.ref(tc.tb_sheet, tc.tb_rows, tc.tb_cols) if raw else None
+                note_ref = f'{get_column_letter(tc.note_col)}{row_ptr}'
+                formula = (f'={note_ref}-{raw_ref}' if raw_ref
+                           else f'={note_ref}-{tc.tb_value}')
+                cell_diff = ws.cell(row_ptr, tdcol, formula)
+                cell_diff.number_format = FMT_AMOUNT
+                cell_diff.border = BORDER
+                cell_diff.font = F_REPORT
+                cell_diff.fill = (FILL_PASS if tc.status == 'pass'
+                                  else FILL_FAIL_TARGET if tc.status == 'fail'
+                                  else FILL_UNKNOWN)
                 stats['tb_cells'] += 1
 
         row_ptr += 1
@@ -751,8 +741,9 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                    source_note='', log=print):
     """生成成果表：勾稽底稿 / 汇总表 / 完整性 三张。"""
     wb = Workbook()
-    ws = wb.active
-    ws.title = '勾稽底稿'
+    ws_sum = wb.active          # 汇总表放第一张
+    ws_sum.title = '汇总表'
+    ws = wb.create_sheet('勾稽底稿')   # 主体第二张
 
     # 原始数据（报表 + TB）先贴好，底稿右侧才能写成引用
     tb_sheet_names = sorted({t.tb_sheet for t in (tb_checks or []) if t.tb_sheet})
@@ -840,16 +831,12 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     for c in range(2, 11):
         ws.column_dimensions[get_column_letter(c)].width = 16
     for p in periods:
-        rc, dc = report_map[p]
-        ws.column_dimensions[get_column_letter(rc)].width = 16
-        ws.column_dimensions[get_column_letter(dc)].width = 13
+        ws.column_dimensions[get_column_letter(report_map[p])].width = 18
         if tb_checks:
-            tc, td = tb_map[p]
-            ws.column_dimensions[get_column_letter(tc)].width = 16
-            ws.column_dimensions[get_column_letter(td)].width = 13
+            ws.column_dimensions[get_column_letter(tb_map[p])].width = 18
     ws.freeze_panes = 'A5'
 
-    _write_summary_sheet(wb.create_sheet('汇总表'), stats, results, model, tables,
+    _write_summary_sheet(ws_sum, stats, results, model, tables,
                          len(cross or []), len(tb_checks or []),
                          len(note_no_checks or []), len(note_cross or []),
                          len(disclosure or []), source_note=source_note,
@@ -858,6 +845,10 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
                            note_no_checks, note_cross, anomalies)
 
+    # 工作表顺序：汇总表 → 勾稽底稿 → 完整性 → 原始数据
+    order = ['汇总表', '勾稽底稿', '完整性', RawData.SHEET_NAME]
+    wb._sheets.sort(key=lambda sh: order.index(sh.title)
+                    if sh.title in order else len(order))
     wb.save(out_path)
     log(f'[输出] 成果表已生成：{out_path}')
     log(f'[输出] 附注内部勾稽 {len(results)} 条：通过 {stats["pass"]}，'

@@ -35,7 +35,27 @@ NOTE_HEADER_WORDS = ('附注', '附注号', '附注编号', '注释')
 # 都是内部小项或小计，不挂附注号。
 REPORT_ITEM_ALIAS = {
     '经营活动产生的现金流量净额': '现金流量表补充资料',
+    # 特例：报表上有「实收资本(或股本)」和「…净额」两行，附注只有一节，
+    # 两行的附注号应当一致
+    '实收资本(或股本)净额': '实收资本(或股本)',
 }
+
+# 这些报表项目**不需要**挂附注号：
+#   · 营业总收入/营业总成本：本质是合计行，附注不单独披露
+#   · 不能重分类进损益的其他综合收益：是「其他综合收益」的组成项
+#   · 国家资本：实收资本的子项，在实收资本一节里披露
+NO_NOTE_ITEMS = (
+    '营业总收入', '营业总成本',
+    '(一)不能重分类进损益的其他综合收益',
+    '(二)将重分类进损益的其他综合收益',
+    '国家资本',
+)
+
+
+def is_no_note_item(name):
+    key = rr.normalize_name(name)
+    return any(key == rr.normalize_name(w) or key.startswith(rr.normalize_name(w))
+               for w in NO_NOTE_ITEMS)
 
 
 def _chapter_prefix(chapter):

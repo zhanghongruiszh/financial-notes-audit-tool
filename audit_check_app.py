@@ -159,7 +159,6 @@ class AuditCheckApp(tk.Tk):
         _btn(btn_frame, '打开输出文件夹',
              self.open_out_dir).pack(side=tk.RIGHT)
 
-        _btn(btn_row2, '模板库', self.on_manage_templates).pack(side=tk.LEFT, padx=(0, 10))
         _btn(btn_row2, '导出测试包', self.on_export_diagnostic,
              bg='#FFF2CC', fg='#B25E00').pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(btn_row2,
