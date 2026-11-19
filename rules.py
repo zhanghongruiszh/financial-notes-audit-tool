@@ -32,8 +32,11 @@ from typing import List, Optional
 import docx_ir
 
 TOLERANCE = 0.01
-# 比例类容差：报表比例一般保留 2 位小数，0.5 个百分点以内视为四舍五入尾差
-RATIO_TOLERANCE = 0.005
+# 比例类容差：0.01 个百分点（不是 0.01 个百分点值本身）。
+# 比例在表里存的是小数（53.61% = 0.5361），这里放大 100 倍后比较，
+# 所以「四舍五入到两位小数」产生的尾差能过，再大就作为差异暴露出来，
+# 由人工决定是否调整那一分钱尾差。
+RATIO_TOLERANCE_PP = 0.01
 
 # 视为"新的一段"的行标签：用于判断「其中：」子项到哪里结束
 RE_BLOCK_BREAKER = re.compile(
@@ -179,11 +182,14 @@ def evaluate(item, table_model, tables_by_idx=None):
     if actual is None:
         return CheckResult(item, expected, None, None, 'skip', '目标格不是数字')
     diff = actual - expected
-    tol = RATIO_TOLERANCE if item.is_ratio else TOLERANCE
-    status = 'pass' if abs(diff) <= tol else 'fail'
-    # 比例类一律按"软提示"处理：四舍五入必然有尾差
-    if item.is_ratio and item.level == 'hard':
-        item.level = 'soft'
+    if item.is_ratio:
+        # 比例按"百分点"比较：0.01 个百分点以内算平
+        status = 'pass' if abs(diff) * 100 <= RATIO_TOLERANCE_PP else 'fail'
+        # 比例类一律按"软提示"处理
+        if item.level == 'hard':
+            item.level = 'soft'
+    else:
+        status = 'pass' if abs(diff) <= TOLERANCE else 'fail'
     return CheckResult(item, expected, actual, diff, status)
 
 

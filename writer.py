@@ -253,7 +253,8 @@ def _write_diff_sheet(ws, results):
             cell.font = F_BODY
             cell.border = BORDER
             if i in (8, 9, 10) and isinstance(v, (int, float)):
-                cell.number_format = FMT_AMOUNT
+                cell.number_format = ('0.00%;[Red]-0.00%' if getattr(it, 'is_ratio', False)
+                                      else FMT_AMOUNT)
         ws.cell(n + 1, 10).fill = FILL_FAIL_TARGET
 
     widths = [6, 22, 18, 7, 9, 46, 12, 15, 15, 13]
