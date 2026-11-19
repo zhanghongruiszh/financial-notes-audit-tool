@@ -296,7 +296,44 @@ def _row_by_value(tm, current, sheet, item_row, item_col, get_value):
     return None
 
 
-def fill_missing_checks(model, tables, report, out, get_value=None):
+def build_number_index(model, report, wb):
+    """用报表「附注」列建立 报表项目 → Word 小节 的编号索引。
+
+    测试数据里的附注号是人工核对过的，可以直接当"对齐信号"：
+    名称对不上时，用编号去定位它到底属于 Word 的哪一节。
+    """
+    import re
+    word_by_no = {}
+    for ch in model.chapters:
+        for sub in ch.sub_items:
+            no = getattr(sub, 'number', None)
+            if no:
+                word_by_no.setdefault(int(no), sub.name)
+
+    index = {}
+    for sheet in getattr(report, 'sheets', []):
+        if sheet.name not in getattr(wb, 'sheetnames', []):
+            continue
+        ws = wb[sheet.name]
+        for name, (row, icol) in sheet.items.items():
+            for dc in (1, 2, -1, 3):
+                if icol + dc < 1:
+                    continue
+                cell = ws.cell(row, icol + dc).value
+                if not isinstance(cell, str) or len(cell) > 12:
+                    continue
+                m = re.search(r'(\d+)\s*$', cell)
+                if not m:
+                    continue
+                no = int(m.group(1))
+                if no in word_by_no:
+                    index[(sheet.name, row)] = word_by_no[no]
+                break
+    return index
+
+
+def fill_missing_checks(model, tables, report, out, get_value=None,
+                        number_index=None):
     """给"还没挂上勾稽"的报表项目补勾稽。
 
     判定方式：在附注表里找一行，其金额与该报表项目相等（±0.01），
@@ -342,9 +379,12 @@ def fill_missing_checks(model, tables, report, out, get_value=None):
             if all((sheet.name, row, c) in claimed for c in cols):
                 continue
 
+            sub_by_no = (number_index or {}).get((sheet.name, row))
             for tm in tables:
-                rel = (name in tm.sub_item) or any(
-                    name in (r.label or '') for r in tm.rows)
+                # 名称相关，或者编号指出它属于这一节
+                rel = ((name in tm.sub_item)
+                       or any(name in (r.label or '') for r in tm.rows)
+                       or (sub_by_no and tm.sub_item == sub_by_no))
                 if not rel:
                     continue
                 for r in tm.rows:

@@ -218,9 +218,12 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
 
     cross = cross_checks.build_cross_checks(
         model, tables, report, get_value=_get_value)
+    # 用报表「附注」列的编号建立"项目 → Word 小节"索引（测试数据里这个号是核对过的）
+    number_index = cross_checks.build_number_index(model, report, wb_src)
     # 一对多的科目（收入&成本、三项费用、费用其中项）在这里补挂
     cross = cross_checks.fill_missing_checks(
-        model, tables, report, cross, get_value=_get_value)
+        model, tables, report, cross, get_value=_get_value,
+        number_index=number_index)
     # 「归属于母公司所有者的其他综合收益」只对利润表，不对资产负债表
     cross = [c for c in cross
              if not (str(getattr(c, 'sub_item', '')).startswith('归属于')
