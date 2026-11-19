@@ -244,7 +244,59 @@ def _match_report(report, scope, names):
     return None, None, None
 
 
-def build_cross_checks(model, tables, report):
+def _note_col_of(tm, period):
+    for c in tm.columns:
+        if c.is_data and c.period == period:
+            return c.index + 1
+    return None
+
+
+def _row_by_value(tm, current, sheet, item_row, item_col, get_value):
+    """在表里挑一行，使它的金额最接近报表该项目的金额。
+
+    不依赖行名（合计/净额/余额/账面价值…），纯按数值判断，
+    换个项目、换个叫法都能用。
+    """
+    try:
+        val_cols = (sheet.blocks or {}).get(item_col) or {}
+    except Exception:
+        return None
+    if not val_cols:
+        return None
+
+    rows = [r for r in tm.rows
+            if r.kind in ('detail', 'subtotal', 'total') and r.label]
+    if not rows:
+        return None
+
+    best = None
+    best_score = None
+    for r in rows:
+        total = 0.0
+        hits = 0
+        for col, period in val_cols.items():
+            rv = get_value(sheet.name, item_row, col)
+            if rv is None:
+                continue
+            nc = _note_col_of(tm, period)
+            if nc is None:
+                continue
+            nv = rules.cell_number(tm.ref.grid, r.row, nc)
+            if nv is None:
+                continue
+            total += abs(nv - rv)
+            hits += 1
+        if not hits:
+            continue
+        sc = (total, -hits)
+        if best_score is None or sc < best_score:
+            best, best_score = r, sc
+    if best is not None and best_score is not None and best_score[0] <= 0.01:
+        return best
+    return None
+
+
+def build_cross_checks(model, tables, report, get_value=None):
     by_sub = {}
     for tm in tables:
         by_sub.setdefault((tm.chapter, tm.sub_item), []).append(tm)
@@ -286,6 +338,12 @@ def build_cross_checks(model, tables, report):
                     return True
                 head = (col.header_text or '').replace(' ', '')
                 return any(k in head for k in hint_keys)
+
+            # 模糊匹配代表行：名字对不上时，用**数值**去验证
+            # （Word 里每个带编号的项目一定对应一个报表项目，两边金额应当相等）
+            if get_value is not None:
+                tot = _row_by_value(tm, tot, sheet, item_row, item_col,
+                                    get_value) or tot
 
             per_period = {}
             for col in tm.columns:

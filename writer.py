@@ -55,6 +55,9 @@ FILL_TB_HDR = PatternFill('solid', start_color='DDEBF7', end_color='DDEBF7')
 THIN = Side(style='thin', color='D9D9D9')
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
+# A 列只放编号，表体整体右移一列
+COL_OFF = 1
+
 FMT_AMOUNT = '#,##0.00;[Red](#,##0.00);"-"'
 FMT_RATIO = '0.00%;[Red]-0.00%;"-"'
 FMT_DATE = 'yyyy-mm-dd'
@@ -156,8 +159,11 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     if num.isdigit():
         num = str(int(num))
     if show_title:
-        label = f'{num}　{tm.sub_item}' if num else tm.sub_item
-        title_cell = ws.cell(row_ptr, 1, label)
+        no_cell = ws.cell(row_ptr, 1, num)
+        no_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+        no_cell.fill = FILL_TABLE_TITLE
+        no_cell.alignment = Alignment(horizontal='center')
+        title_cell = ws.cell(row_ptr, 2, tm.sub_item)
         title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
         title_cell.fill = FILL_TABLE_TITLE
     else:
@@ -196,7 +202,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             if it.rule_id in horiz_map and it.rule_id not in rules_here:
                 rules_here.append(it.rule_id)
     check_cols = {}
-    base_col = tm.ref.cols + 2
+    base_col = tm.ref.cols + 2 + COL_OFF
     # 报表勾稽列是全局统一的，横向列不能压到它们上面；
     # 会撞的话就顺延到报表/TB 块后面
     report_start = min(report_map.values()) if report_map else 999
@@ -243,13 +249,13 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                     'row': r_idx, 'col': c_idx, 'text': str(text).strip(),
                 })
             value = docx_ir.parse_cell_value(text)
-            _write_value(ws, row_ptr, c_idx, value)
+            _write_value(ws, row_ptr, c_idx + COL_OFF, value)
             if _column_is_ratio(tm, c_idx - 1) and isinstance(value, float):
-                ws.cell(row_ptr, c_idx).number_format = FMT_RATIO
+                ws.cell(row_ptr, c_idx + COL_OFF).number_format = FMT_RATIO
         kind = next((r.kind for r in tm.rows if r.row == r_idx), None)
         if kind == 'header':
             for c_idx in range(1, tm.ref.cols + 1):
-                cell = ws.cell(row_ptr, c_idx)
+                cell = ws.cell(row_ptr, c_idx + COL_OFF)
                 cell.font = F_HEADER
                 cell.fill = FILL_HEADER
         src_to_dst[r_idx] = row_ptr
@@ -265,7 +271,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                 parts = []
                 for i, (rr, cc0, coef) in enumerate(
                         cc.note_terms or [(cc.note_row, cc.note_col, 1)]):
-                    ref = f'{get_column_letter(cc0)}{row_ptr}'
+                    ref = f'{get_column_letter(cc0 + COL_OFF)}{row_ptr}'
                     if i == 0:
                         parts.append(f'-{ref}' if coef < 0 else ref)
                     else:
@@ -291,7 +297,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             if tc.period in tb_map:
                 tdcol = tb_map[tc.period]
                 raw_ref = raw.ref(tc.tb_sheet, tc.tb_rows, tc.tb_cols) if raw else None
-                note_ref = f'{get_column_letter(tc.note_col)}{row_ptr}'
+                note_ref = f'{get_column_letter(tc.note_col + COL_OFF)}{row_ptr}'
                 formula = (f'={note_ref}-{raw_ref}' if raw_ref
                            else f'={note_ref}-{tc.tb_value}')
                 cell_diff = ws.cell(row_ptr, tdcol, formula)
@@ -353,7 +359,7 @@ def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
     """横向勾稽写在本行右侧列：只放差额公式，不写文字。"""
     res = results_by_key.get(id(item))
     own_idx = item.table_idx
-    target_ref = (f'{get_column_letter(item.target_col)}'
+    target_ref = (f'{get_column_letter(item.target_col + COL_OFF)}'
                   f'{src_to_dst.get(item.target_row, item.target_row)}')
     if check_rows is not None:
         check_rows[id(item)] = row_ptr
@@ -389,7 +395,7 @@ def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
         stats['pass'] += 1
 
 
-def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
+def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx, col_off=0):
     parts = []
     for i, t in enumerate(terms):
         ref = _cell_ref(t, src_to_dst, global_rows, own_table_idx)
@@ -407,7 +413,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
                      check_rows=None):
     res = results_by_key.get(id(item))
     own_idx = item.table_idx
-    target_ref = (f'{get_column_letter(item.target_col)}'
+    target_ref = (f'{get_column_letter(item.target_col + COL_OFF)}'
                   f'{src_to_dst.get(item.target_row, item.target_row)}')
     if check_rows is not None:
         check_rows[id(item)] = row_ptr
@@ -429,16 +435,16 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         number_format = FMT_AMOUNT
 
     if formula is None:
-        target_cell = ws.cell(row_ptr, item.target_col, '（跨表引用不可用）')
+        target_cell = ws.cell(row_ptr, item.target_col + COL_OFF, '（跨表引用不可用）')
         target_cell.fill = FILL_UNKNOWN
         target_cell.font = F_CHECK
         target_cell.border = BORDER
-        for c in range(1, item.target_col + 1):
+        for c in range(1, item.target_col + 1 + COL_OFF):
             ws.cell(row_ptr, c).border = BORDER
         stats['skip'] += 1
         return row_ptr + 1
 
-    target_cell = ws.cell(row_ptr, item.target_col, formula)
+    target_cell = ws.cell(row_ptr, item.target_col + COL_OFF, formula)
     target_cell.number_format = number_format
     target_cell.font = F_CHECK
     target_cell.border = BORDER
@@ -449,7 +455,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     elif res.status == 'unclear':
         target_cell.fill = FILL_PASS
         target_cell.font = Font(name='Consolas', size=9, color='B25E00')
-        for c in range(1, item.target_col + 1):
+        for c in range(1, item.target_col + 1 + COL_OFF):
             ws.cell(row_ptr, c).fill = PatternFill(fill_type=None)
         stats['unclear'] += 1
     elif res.status == 'pass':
@@ -458,11 +464,11 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     else:
         # 有差异：整格标红
         target_cell.fill = FILL_FAIL_TARGET
-        for c in range(1, item.target_col + 1):
+        for c in range(1, item.target_col + 1 + COL_OFF):
             ws.cell(row_ptr, c).fill = PatternFill(fill_type=None)
         stats['fail'] += 1
 
-    for c in range(1, item.target_col + 1):
+    for c in range(1, item.target_col + 1 + COL_OFF):
         ws.cell(row_ptr, c).border = BORDER
     return row_ptr + 1
 

@@ -195,9 +195,17 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     report = rr.read_report(report_use)
     log(f'      识别到报表 {len(report.sheets)} 张：'
         + '、'.join(s.name for s in report.sheets))
-    cross = cross_checks.build_cross_checks(model, tables, report)
     import openpyxl
     wb_src = openpyxl.load_workbook(report_use, data_only=True)
+
+    def _get_value(sheet_name, row, col):
+        if sheet_name not in wb_src.sheetnames:
+            return None
+        v = wb_src[sheet_name].cell(row, col).value
+        return float(v) if isinstance(v, (int, float)) else None
+
+    cross = cross_checks.build_cross_checks(
+        model, tables, report, get_value=_get_value)
     report_values = {}
     for cc in cross:
         if cc.sheet and cc.rows and cc.cols and cc.sheet in wb_src.sheetnames:
