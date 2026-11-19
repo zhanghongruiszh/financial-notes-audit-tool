@@ -217,8 +217,7 @@ class AuditCheckApp(tk.Tk):
                    lambda v: webbrowser.open(v), '点击打开')
         link_field('联系邮箱：', AUTHOR_EMAIL,
                    lambda v: os.startfile('mailto:' + v), '点击发邮件')
-        tk.Label(footer, text='（点击打开，右键或「复制」按钮复制）',
-                 font=('微软雅黑', 7), fg='#999999').pack(side=tk.LEFT)
+
 
     # ------------------------------------------------------------ 工具
 
