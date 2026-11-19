@@ -59,7 +59,7 @@ FMT_AMOUNT = '#,##0.00;[Red](#,##0.00);"-"'
 FMT_RATIO = '0.00%;[Red]-0.00%;"-"'
 FMT_DATE = 'yyyy-mm-dd'
 
-REPORT_COL_START = 11          # K 列起：报表勾稽
+REPORT_COL_START = 20          # T 列起：报表勾稽（前面留给每张表的横向勾稽列）
 TB_COL_START_OFFSET = 2        # 报表块之后接 TB 块
 
 
@@ -162,6 +162,26 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         cell.font = Font(name='微软雅黑', size=8, color='808080')
         row_ptr += 1
 
+    # ---------- 横向勾稽：在表格右侧加列，不插行 ----------
+    horiz_map = {'H-SUM': '横加', 'R-NET': '余额-准备', 'R-NBV': '原值-折旧',
+                 'R-MOVE': '期初期末', 'R-PCT': '比例'}
+    rules_here = []
+    for items in checks_by_row.values():
+        for it in items:
+            if it.rule_id in horiz_map and it.rule_id not in rules_here:
+                rules_here.append(it.rule_id)
+    check_cols = {}
+    base_col = tm.ref.cols + 2
+    for i, rid in enumerate(rules_here):
+        col = base_col + i
+        if col >= REPORT_COL_START:
+            break
+        check_cols[rid] = col
+        hc = ws.cell(row_ptr - 1, col, horiz_map[rid])
+        hc.font = Font(name='微软雅黑', size=8, color='808080')
+        hc.fill = FILL_TABLE_TITLE
+        hc.alignment = Alignment(horizontal='center')
+
     src_to_dst = {}
     note_row_map = {}
     for r_idx, row in enumerate(grid, 1):
@@ -238,8 +258,15 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         row_ptr += 1
 
         for item in checks_by_row.get(r_idx, []):
-            row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
-                                       row_ptr, stats, global_rows, check_rows)
+            if item.rule_id in check_cols:
+                # 横向勾稽：写在本行右侧的新列里，不插行
+                _write_horiz_cell(ws, item, src_to_dst, results_by_key,
+                                  row_ptr, check_cols[item.rule_id],
+                                  stats, global_rows, check_rows)
+            else:
+                # 纵向勾稽：插一行，只留公式，不写说明文字
+                row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
+                                           row_ptr, stats, global_rows, check_rows)
 
     return row_ptr, note_row_map
 
@@ -253,6 +280,46 @@ def _cell_ref(term, src_to_dst, global_rows, own_table_idx):
         if row is None:
             return None
     return f'{get_column_letter(term.col)}{row}'
+
+
+def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
+                      stats, global_rows, check_rows=None):
+    """横向勾稽写在本行右侧列：只放差额公式，不写文字。"""
+    res = results_by_key.get(id(item))
+    own_idx = item.table_idx
+    target_ref = (f'{get_column_letter(item.target_col)}'
+                  f'{src_to_dst.get(item.target_row, item.target_row)}')
+    if check_rows is not None:
+        check_rows[id(item)] = row_ptr
+
+    if item.den:
+        num = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        den = _terms_expr(item, item.den, src_to_dst, global_rows, own_idx)
+        formula = (f'={target_ref}-({num})/({den})'
+                   if num is not None and den is not None else None)
+        fmt = FMT_RATIO
+    else:
+        expr = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        formula = f'={target_ref}-({expr})' if expr is not None else None
+        fmt = FMT_AMOUNT
+
+    cell = ws.cell(row_ptr, col)
+    if formula is None or res is None or res.status == 'skip':
+        stats['skip'] += 1
+        cell.fill = FILL_UNKNOWN
+        return
+    cell.value = formula
+    cell.number_format = fmt
+    cell.border = BORDER
+    if res.status == 'unclear':
+        cell.fill = FILL_UNKNOWN
+        stats['unclear'] += 1
+    elif res.status == 'pass':
+        cell.fill = FILL_PASS
+        stats['pass'] += 1
+    else:
+        cell.fill = FILL_FAIL_TARGET
+        stats['fail'] += 1
 
 
 def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
@@ -278,7 +345,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     if check_rows is not None:
         check_rows[id(item)] = row_ptr
 
-    label = f'【勾稽校验】{item.label}'
+    label = ''      # 不写说明文字：差异点开公式就能看明白
     cell = ws.cell(row_ptr, 1, label)
     cell.font = F_CHECK
     cell.fill = FILL_FAIL_ROW if (res and res.status == 'fail') else FILL_CHECK_ROW
