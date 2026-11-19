@@ -412,10 +412,132 @@ def _block_header(ws, row, title, headers, widths=None):
     return row + 1
 
 
+
+def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
+    """二、报表项目逐项勾稽：每个报表项目一行，写清是否勾稽、是否一致。
+
+    参考移植前那张 check 表的看板：先逐项列清，再单独罗列差异。
+    """
+    headers = ['序号', '财务报表', '报表项目', '附注编号', '附注科目',
+               '是否勾稽', '是否一致', '差额合计', '定位']
+    r = _block_header(ws, r, '二、报表项目逐项勾稽（每个报表项目一行）', headers)
+
+    ws_report = None
+    try:
+        import openpyxl
+        ws_report = openpyxl.load_workbook(report.path, data_only=True)
+    except Exception:
+        ws_report = None
+
+    def _cell_value(book, sheet_name, row, col):
+        if book is None or sheet_name not in book.sheetnames:
+            return None
+        v = book[sheet_name].cell(row, col).value
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v or '').strip().replace(',', '')
+        if s in ('', '-', '--', '—', '——', '–', '/'):
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    by_row = {}
+    for cc in (cross or []):
+        by_row.setdefault((cc.sheet, cc.rows), []).append(cc)
+
+    # 双栏报表同一行有左右两个科目，按"表名+科目名"定位才不会串号
+    import report_reader as _rr
+    note_no = {}
+    for chk in (note_no_checks or []):
+        note_no[(chk.sheet, _rr.normalize_name(chk.item_name))] = chk
+
+    n = 0
+    tot = ok = diff = 0.0
+    for sheet in (report.sheets if report else []):
+        if not sheet.period_columns():
+            continue
+        for name, (row, item_col) in sheet.items.items():
+            if not name or name.endswith((':', '：')):
+                continue
+            if any(w in name for w in ('合计', '总计')):
+                continue
+            n += 1
+            tot += 1
+            # 只看属于本栏（左/右）的勾稽结果
+            val_cols = set((sheet.blocks.get(item_col) or {}).keys())
+            checks = [c for c in by_row.get((sheet.name, row), [])
+                      if c.cols in val_cols]
+            nc = note_no.get((sheet.name, _rr.normalize_name(name)))
+            if checks:
+                bad = [c for c in checks if c.status == 'fail']
+                unk = [c for c in checks if c.status == 'unmatched']
+                if bad:
+                    flag, state = '已勾稽', '有差异'
+                    delta = sum(c.diff or 0 for c in bad)
+                    diff += 1
+                elif unk:
+                    flag, state = '已勾稽', '待确认'
+                    delta = None
+                else:
+                    flag, state = '已勾稽', '一致'
+                    delta = 0.0
+                    ok += 1
+            else:
+                # 各期都是 0/空的项目：本来就没有金额，不算"漏勾"
+                has_amount = False
+                for col in (sheet.blocks.get(item_col) or {}):
+                    v = _cell_value(ws_report, sheet.name, row, col)
+                    if v:
+                        has_amount = True
+                        break
+                if has_amount:
+                    flag, state, delta = '未勾稽', '', None
+                else:
+                    flag, state, delta = '—（无金额）', '', None
+
+            vals = [n, sheet.name, name,
+                    (nc.actual if nc else ''),
+                    (checks[0].sub_item if checks else ''),
+                    flag, state, delta, '']
+            for i, v in enumerate(vals, 1):
+                cell = ws.cell(r, i, v)
+                cell.font = F_BODY
+                cell.border = BORDER
+                if i == 8 and isinstance(v, (int, float)):
+                    cell.number_format = FMT_AMOUNT
+            color = {'一致': FILL_PASS, '有差异': FILL_FAIL_TARGET,
+                     '待确认': FILL_UNKNOWN}.get(state)
+            if color:
+                ws.cell(r, 7).fill = color
+            if flag == '未勾稽':
+                ws.cell(r, 6).fill = FILL_UNKNOWN
+            if checks:
+                target = (note_rows or {}).get((checks[0].note_table,
+                                                checks[0].note_row))
+                if target:
+                    cell = ws.cell(r, 9, f'勾稽底稿!A{target}')
+                    cell.font = Font(name='微软雅黑', size=9, color='0563C1',
+                                     underline='single')
+                    from openpyxl.worksheet.hyperlink import Hyperlink
+                    cell.hyperlink = Hyperlink(
+                        ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
+            r += 1
+
+    ws.cell(r, 1, f'小计：报表项目 {int(tot)} 个，已勾稽 {int(ok + diff)} 个'
+                  f'（一致 {int(ok)}，有差异 {int(diff)}）').font = F_HEADER
+    r += 2
+    return r
+
+
 def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
                          tb_count, nn_count, nx_count, disclosure_count,
                          source_note='', check_rows=None, note_rows=None,
-                         cross=None, tb_checks=None, note_cross=None):
+                         cross=None, tb_checks=None, note_cross=None,
+                         report=None, note_no_checks=None):
     ws.cell(1, 1, '勾稽汇总表').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     r = 3
 
@@ -478,8 +600,11 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
     ws.cell(r, 2, disclosure_count).font = F_BODY
     r += 2
 
-    # 二、差异明细（带跳转链接，点一下跳到底稿对应位置）
-    r = _block_header(ws, r, '二、差异明细（点「定位」可跳转到勾稽底稿对应位置）',
+    # 二、报表项目逐项勾稽（参考移植前看板：先逐项列清）
+    r = _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats)
+
+    # 三、差异明细（带跳转链接，点一下跳到底稿对应位置）
+    r = _block_header(ws, r, '三、差异明细（点「定位」可跳转到勾稽底稿对应位置）',
                       ['序号', '类型', '子项目 / 说明', '期间', '期望值', '实际值',
                        '差额', '定位'])
     from openpyxl.worksheet.hyperlink import Hyperlink
@@ -574,7 +699,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
                  'R-NBV': '账面价值 = 原值 − 折旧 − 减值',
                  'R-MOVE': '期末 = 期初 + 本期增加 − 本期减少',
                  'R-PCT': '比例重算'}
-    ws.cell(r, 1, '三、规则与表类型分布').font = F_HEADER
+    ws.cell(r, 1, '四、规则与表类型分布').font = F_HEADER
     r += 1
     for k, v in sorted(by_rule.items()):
         ws.cell(r, 1, k).font = F_BODY
@@ -841,7 +966,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                          len(note_no_checks or []), len(note_cross or []),
                          len(disclosure or []), source_note=source_note,
                          check_rows=check_rows, note_rows=note_rows,
-                         cross=cross, tb_checks=tb_checks, note_cross=note_cross)
+                         cross=cross, tb_checks=tb_checks, note_cross=note_cross,
+                         report=report, note_no_checks=note_no_checks)
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
                            note_no_checks, note_cross, anomalies)
 
