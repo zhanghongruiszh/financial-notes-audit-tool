@@ -69,9 +69,13 @@ def build(notes, report, tb, log_text, out_path, project=''):
     import notes_parser
     import table_semantics as ts
 
-    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    base = f'{project or "项目"}_测试包_{stamp}'
-    work = os.path.join(os.path.dirname(os.path.abspath(out_path)), base)
+    # 最终 zip 就用调用方给的路径（用户在"另存为"里选的），
+    # 中间目录放在它旁边、收尾时清掉
+    zip_path = os.path.abspath(out_path)
+    if not zip_path.lower().endswith('.zip'):
+        zip_path += '.zip'
+    work = zip_path + '.work'
+    shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
 
     tables = []
@@ -144,7 +148,6 @@ def build(notes, report, tb, log_text, out_path, project=''):
     if os.path.isdir(log_copy):
         shutil.rmtree(log_copy, ignore_errors=True)
 
-    zip_path = work + '.zip'
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         for root, _dirs, files in os.walk(work):
             for name in files:

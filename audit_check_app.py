@@ -357,20 +357,30 @@ class AuditCheckApp(tk.Tk):
         if not notes:
             messagebox.showwarning('提示', '请先选择报告附注文件（至少要能被程序打开）。')
             return
+        # 先让用户选保存位置（测试人员才知道发出去的文件在哪）
+        import datetime
+        import pipeline as _pl
+        project = self.var_project.get().strip() or \
+            _pl.infer_project_name(report or notes, notes, tb) or '项目'
+        stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        out = filedialog.asksaveasfilename(
+            title='保存测试包',
+            defaultextension='.zip',
+            initialdir=os.path.dirname(os.path.abspath(notes)) or '.',
+            initialfile=f'{project}_测试包_{stamp}.zip',
+            filetypes=[('压缩包', '*.zip'), ('所有文件', '*.*')])
+        if not out:
+            return
+
         self.btn_run.config(state=tk.DISABLED, text='打包中...')
         self.log('\n' + '=' * 60)
+        self.log(f'[测试包] 保存到：{out}')
         self.log('[测试包] 正在收集信息 ...')
 
         def work():
             _co_init()
             try:
                 import diagnostics
-                project = self.var_project.get().strip()
-                if not project:
-                    import pipeline
-                    project = pipeline.infer_project_name(report or notes, notes, tb)
-                target_dir = os.path.dirname(notes) or os.path.abspath('.')
-                out = os.path.join(target_dir, (project or '项目') + '_测试包.zip')
                 log_text = self.txt_log.get('1.0', 'end')
                 path = diagnostics.build(notes, report, tb, log_text, out, project)
                 self.log(f'[测试包] 已生成：{path}')
