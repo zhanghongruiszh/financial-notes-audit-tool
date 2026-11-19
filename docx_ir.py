@@ -167,6 +167,58 @@ def _dump_table(tbl, tidx):
     return {'idx': tidx, 'rows': n_rows, 'cols': n_cols, 'grid': grid}
 
 
+def numbers_sidecar(docx_path):
+    """渲染编号的旁挂文件路径（与 docx 同目录同名）。"""
+    return os.path.splitext(os.path.abspath(docx_path))[0] + '.numbers.json'
+
+
+def dump_rendered_numbers(word_doc, docx_path):
+    """让 Word 报出每个段落的**实际显示编号**，写成 json 旁挂文件。
+
+    word_doc 是已经打开的 Word.Document（COM 对象）。
+    ListFormat.ListString 就是用户在 Word 里看到的"五、""1、"。
+    """
+    import json
+    mapping = {}
+    try:
+        paragraphs = word_doc.Paragraphs
+        total = paragraphs.Count
+    except Exception:
+        return None
+
+    for i in range(1, total + 1):
+        try:
+            p = paragraphs(i)
+            text = (p.Range.Text or '').replace('\r', '').replace('\x07', '').strip()
+            if not text:
+                continue
+            num = (p.Range.ListFormat.ListString or '').strip()
+            if num:
+                mapping[text] = num
+        except Exception:
+            continue
+
+    try:
+        with open(numbers_sidecar(docx_path), 'w', encoding='utf-8') as f:
+            json.dump(mapping, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    return mapping
+
+
+def load_rendered_numbers(docx_path):
+    """读回 Word 报的编号映射（没有就返回空 dict）。"""
+    import json
+    path = numbers_sidecar(docx_path)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def load_stream(docx_path):
     """按文档物理顺序返回 段落 / 表格 流。
 
@@ -184,6 +236,7 @@ def load_stream(docx_path):
     stream = []
     t_idx = 0
     p_idx = 0
+    rendered = load_rendered_numbers(docx_path)     # Word 报的"实际显示编号"
     for child in doc.element.body.iterchildren():
         if child.tag == qn('w:p'):
             para = Paragraph(child, doc)
@@ -192,13 +245,18 @@ def load_stream(docx_path):
             except Exception:
                 style_id = ''
             num = number_map.get(child)
+            text = para.text.strip()
+            label = num['label'] if num else None
+            # 以 Word 实际渲染的编号为准（逐字匹配段落文字）
+            if rendered and label and text in rendered:
+                label = rendered[text]
             stream.append({
                 'kind': 'p',
                 'i': p_idx,
-                'text': para.text.strip(),
+                'text': text,
                 'style_id': style_id,
                 'outline': _effective_outline(para),
-                'auto_number': num['label'] if num else None,
+                'auto_number': label,
                 'auto_number_value': num['value'] if num else None,
                 'num_ilvl': num['ilvl'] if num else None,
             })
@@ -289,7 +347,14 @@ def ensure_docx(src_path, work_dir=None):
             # 注意：Word 的当前工作目录不是本进程的当前目录，
             # Open/SaveAs2 必须传绝对路径，否则报"这不是有效文件名"。
             doc = word.Documents.Open(os.path.abspath(src_use), ConfirmConversions=False,
-                                      ReadOnly=True, AddToRecentFiles=False)
+                                      ReadOnly=False, AddToRecentFiles=False)
+            # 让 Word 把自动编号"烤"成正文文字：这样 docx 里的编号就是
+            # 用户在 Word 里看到的那一个（numbering.xml 的起始值不一定等于渲染结果）。
+            # 顺带把编号问题彻底消灭——后面读到的都是字面编号。
+            try:
+                doc.ConvertNumbersToText()
+            except Exception:
+                pass
             doc.SaveAs2(os.path.abspath(out_stage), FileFormat=16)
             doc.Close(False)
         finally:
@@ -299,7 +364,7 @@ def ensure_docx(src_path, work_dir=None):
                 pass
         return out_stage
 
-    _run_com_with_timeout(_convert, 120, 'Word 转换附注')
+    _run_com_with_timeout(_convert, 300, 'Word 转换附注')
     if os.path.abspath(out_stage) != os.path.abspath(dst):
         import shutil
         shutil.copy2(out_stage, dst)
