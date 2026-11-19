@@ -33,6 +33,7 @@ extracted_notes.xlsx
 *mapping*.txt
 scratch_*.*
 test_*.py
+!tools/test_*.py
 
 # ==========================================
 # 系统与编译中间产物

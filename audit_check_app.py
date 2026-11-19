@@ -147,6 +147,10 @@ class AuditCheckApp(tk.Tk):
                   bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
                   command=self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
 
+        tk.Button(btn_frame, text='转换 docx/xlsx', font=('微软雅黑', 9),
+                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
+                  command=self.on_convert).pack(side=tk.LEFT, padx=(0, 10))
+
         tk.Button(btn_frame, text='模板库', font=('微软雅黑', 9),
                   bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
                   command=self.on_manage_templates).pack(side=tk.LEFT, padx=(0, 10))
@@ -252,8 +256,31 @@ class AuditCheckApp(tk.Tk):
         def work():
             _co_init()
             try:
+                import convert_inputs
                 import pipeline
-                res = pipeline.run(notes, report, tb, archive_root=root,
+
+                # 先把 .doc/.xls 转成 .docx/.xlsx（转换一次，之后都读新格式，快且稳）
+                self.log('\n[转换] 检查导入文件格式 ...')
+                pairs = convert_inputs.convert_many([notes, report, tb], log=self.log)
+                use = {}
+                for old, new, msg in pairs:
+                    if new:
+                        use[os.path.abspath(old)] = new
+                        if msg.startswith('已转换') or msg.startswith('复用'):
+                            self.log(f'      {os.path.basename(old)} → '
+                                     f'{os.path.basename(new)}（{msg}）')
+                notes2 = use.get(os.path.abspath(notes), notes)
+                report2 = use.get(os.path.abspath(report), report)
+                tb2 = use.get(os.path.abspath(tb), tb)
+
+                def apply_paths():
+                    self.var_notes.set(notes2)
+                    self.var_report.set(report2)
+                    self.var_tb.set(tb2)
+
+                self.after(0, apply_paths)
+
+                res = pipeline.run(notes2, report2, tb2, archive_root=root,
                                    project_name=project, log=self.log)
                 self.last_out_dir = res['out_dir']
                 stats = res['stats']
@@ -271,6 +298,49 @@ class AuditCheckApp(tk.Tk):
                 messagebox.showerror('勾稽失败', f'{exc}')
             finally:
                 self.btn_run.config(state=tk.NORMAL, text='开始自动化全面勾稽')
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ 格式转换
+
+    def on_convert(self):
+        """把选中的 .doc/.xls 转成同目录的 .docx/.xlsx，并把输入框换成新文件。"""
+        notes = self.var_notes.get().strip()
+        report = self.var_report.get().strip()
+        tb = self.var_tb.get().strip()
+        if not (notes or report or tb):
+            messagebox.showwarning('提示', '请先选择要转换的文件。')
+            return
+
+        self.btn_run.config(state=tk.DISABLED, text='转换中...')
+        self.log('\n' + '=' * 60)
+        self.log('[转换] 把 .doc/.xls 转成 .docx/.xlsx ...')
+
+        def work():
+            _co_init()
+            try:
+                import convert_inputs
+                pairs = convert_inputs.convert_many(
+                    [p for p in (notes, report, tb) if p], log=self.log)
+                mapping = {os.path.abspath(o): n for o, n, m in pairs if n}
+
+                def apply_paths():
+                    if notes and os.path.abspath(notes) in mapping:
+                        self.var_notes.set(mapping[os.path.abspath(notes)])
+                    if report and os.path.abspath(report) in mapping:
+                        self.var_report.set(mapping[os.path.abspath(report)])
+                    if tb and os.path.abspath(tb) in mapping:
+                        self.var_tb.set(mapping[os.path.abspath(tb)])
+
+                self.after(0, apply_paths)
+                ok = sum(1 for o, n, m in pairs if m in ('已转换', '复用了已有转换结果'))
+                self.log(f'[转换] 完成，{ok} 个文件已是 docx/xlsx')
+            except Exception as exc:        # noqa: BLE001
+                self.log('[转换] 失败：' + str(exc))
+                self.after(0, lambda: messagebox.showerror('转换失败', str(exc)))
+            finally:
+                self.after(0, lambda: self.btn_run.config(
+                    state=tk.NORMAL, text='开始自动化全面勾稽'))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -533,7 +603,6 @@ def selftest(out_path):
         import tb_checks                     # noqa: F401
         import tb_reader                     # noqa: F401
         import template_lib                  # noqa: F401
-        import word_to_excel_extractor       # noqa: F401
         import writer                        # noqa: F401
         lines.append('业务模块导入 OK')
         lines.append('OK')
