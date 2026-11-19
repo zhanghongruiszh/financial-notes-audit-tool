@@ -500,7 +500,7 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                 rep_val = cell_value(sheet.name, row, vcol) if vcol else None
                 chk = by_period.get(d)
                 note_val = chk.note_value if chk else None
-                if rep_val:
+                if rep_val or note_val:
                     any_amount = True
                 vals += [rep_val, note_val, (chk.diff if chk else None)]
 

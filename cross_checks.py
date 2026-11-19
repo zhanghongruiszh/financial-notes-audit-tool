@@ -82,6 +82,10 @@ SUMMARY_LABELS = ('账面价值', '期末账面价值', '净额', '净值')
 ALIAS_NAMES = {
     '现金流量表补充资料': ['经营活动产生的现金流量净额', '现金及现金等价物净增加额'],
     '营业收入和营业成本': ['营业收入', '营业成本'],
+    # 报表用旧称、附注用新称的情况
+    '应付职工薪酬': ['应付工资', '应付职工工资'],
+    '应交税费': ['应交税金', '应交增值税'],
+    '固定资产': ['固定资产原价', '固定资产净值'],
 }
 
 
@@ -132,7 +136,8 @@ def _split_names(name):
     "营业收入"，导致取到成本列。直接按拆分名逐个匹配。
     """
     if name in ALIAS_NAMES:
-        return ALIAS_NAMES[name]
+        # 原名优先，别名兜底——否则报表用新称时反而匹配不上
+        return [name] + ALIAS_NAMES[name]
     parts = [p.strip() for p in re.split(r'[和、及与]', name) if len(p.strip()) >= 2]
     if parts:
         return parts

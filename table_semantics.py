@@ -106,7 +106,7 @@ PERIOD_KEYS = {
     '期初余额': '期初', '期初': '期初', '年初余额': '期初', '年初': '期初',
     '上期末': '期初', '上年末': '期初',
     '本期': '本期', '本年': '本期', '本期发生额': '本期',
-    '上期': '上期', '上年': '上期',
+    '上期': '上期', '上年': '上期', '上期发生额': '上期', '上期金额': '上期',
 }
 
 RE_DATE = re.compile(r'(\d{4})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})')
@@ -119,6 +119,11 @@ RE_YEAR_ONLY = re.compile(r'(\d{4})\s*年度?(?!\d)')
 _PERIOD_WORDS = '年末余额|年末|年初余额|年初|期末余额|期末|期初余额|期初|本期|上期'
 # 注意前面要排掉「上期期末」「上年期末」——否则「上期期末指2024年12月31日」
 # 会把真正的「期末余额指2025年12月31日」挤掉。
+RE_PERIOD_DEF_YEAR = re.compile(
+    r'[“"\']?(本期发生额|上期发生额|本期|上期|本年|上年)[”"\']?\s*'
+    r'(?:指|为|是|：|:)\s*(\d{4})\s*年度?'
+)
+
 RE_PERIOD_DEF = re.compile(
     r'(?<!上期)(?<!上年)(?<!上一年)(?<!上一)'
     r'[“"\']?(' + _PERIOD_WORDS + r')[”"\']?\s*'
@@ -288,6 +293,22 @@ def build_chapter_context(doc_model, chapter):
             if score > best:
                 ctx['period_defs'][key] = d
                 ctx['_score'][key] = score
+    # 「上期发生额」指2024年度 —— 只有年份的写法
+    for t in texts:
+        for m in RE_PERIOD_DEF_YEAR.finditer(t or ''):
+            word = m.group(1)
+            key = PERIOD_KEYS.get(word)
+            if not key:
+                continue
+            try:
+                d = datetime.date(int(m.group(2)), 12, 31)
+            except ValueError:
+                continue
+            score = 3 if '发生额' in word else 2
+            if score > ctx['_score'].get(key, 0):
+                ctx['period_defs'][key] = d
+                ctx['_score'][key] = score
+
     if not ctx['period_defs']:
         ctx['warnings'].append('未找到「期末/期初」与具体日期的对照句')
     return ctx

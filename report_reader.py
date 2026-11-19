@@ -245,6 +245,32 @@ def _rebuild_blocks(sheet, item_cols):
                 sheet.blocks[ic][col] = d
 
 
+
+def _sub_item_rows(ws, item_cols, max_row):
+    """找出「其中：」及其续行（靠缩进），这些是明细行，不是独立报表项目。"""
+    skip = set()
+    for ic in item_cols:
+        base_indent = None
+        for r in range(1, max_row + 1):
+            raw = ws.cell(r, ic).value
+            if not isinstance(raw, str):
+                continue
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            indent = len(raw) - len(raw.lstrip())
+            if stripped.startswith("其中"):
+                base_indent = indent
+                skip.add((r, ic))
+                continue
+            if base_indent is not None:
+                if indent > base_indent:
+                    skip.add((r, ic))
+                else:
+                    base_indent = None
+    return skip
+
+
 def _read_sheet(ws, name):
     kind = _kind_of(name)
     if kind is None:
@@ -284,8 +310,11 @@ def _read_sheet(ws, name):
     _rebuild_blocks(sheet, item_cols)
 
     data_start = sheet.header_row + 1
+    skip = _sub_item_rows(ws, item_cols, ws.max_row)
     for ic in item_cols:
         for r in range(data_start, ws.max_row + 1):
+            if (r, ic) in skip:
+                continue          # 「其中：」子项，不是独立报表项目
             key = normalize_name(ws.cell(r, ic).value)
             if key and key not in sheet.items:
                 sheet.items[key] = (r, ic)
