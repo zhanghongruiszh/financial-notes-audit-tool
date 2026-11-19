@@ -414,22 +414,17 @@ def _block_header(ws, row, title, headers, widths=None):
 
 
 def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
-    """二、报表项目逐项勾稽：每个报表项目一行，写清是否勾稽、是否一致。
+    """二、报表项目逐项勾稽：每个报表项目一行，写清金额、是否勾稽、是否一致。
 
-    参考移植前那张 check 表的看板：先逐项列清，再单独罗列差异。
+    汇总表允许贴金额（看得清楚）；勾稽底稿不贴，只留公式。
     """
-    headers = ['序号', '财务报表', '报表项目', '附注编号', '附注科目',
-               '是否勾稽', '是否一致', '差额合计', '定位']
-    r = _block_header(ws, r, '二、报表项目逐项勾稽（每个报表项目一行）', headers)
-
-    ws_report = None
     try:
         import openpyxl
-        ws_report = openpyxl.load_workbook(report.path, data_only=True)
+        book = openpyxl.load_workbook(report.path, data_only=True)
     except Exception:
-        ws_report = None
+        book = None
 
-    def _cell_value(book, sheet_name, row, col):
+    def cell_value(sheet_name, row, col):
         if book is None or sheet_name not in book.sheetnames:
             return None
         v = book[sheet_name].cell(row, col).value
@@ -437,11 +432,11 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
             return None
         if isinstance(v, (int, float)):
             return float(v)
-        s = str(v or '').strip().replace(',', '')
-        if s in ('', '-', '--', '—', '——', '–', '/'):
+        t = str(v or '').strip().replace(',', '')
+        if t in ('', '-', '--', '—', '——', '–', '/'):
             return 0.0
         try:
-            return float(s)
+            return float(t)
         except ValueError:
             return None
 
@@ -449,77 +444,101 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
     for cc in (cross or []):
         by_row.setdefault((cc.sheet, cc.rows), []).append(cc)
 
-    # 双栏报表同一行有左右两个科目，按"表名+科目名"定位才不会串号
     import report_reader as _rr
     note_no = {}
     for chk in (note_no_checks or []):
         note_no[(chk.sheet, _rr.normalize_name(chk.item_name))] = chk
 
-    n = 0
-    tot = ok = diff = 0.0
+    # 先扫一遍，决定要展示几期（最多两期：期末/期初）
+    periods = []
+    for sheet in (report.sheets if report else []):
+        for _col, d in sheet.period_columns():
+            if d not in periods:
+                periods.append(d)
+    periods = sorted(periods, reverse=True)[:2]
+
+    headers = ['序号', '财务报表', '报表项目', '附注编号', '附注科目']
+    for d in periods:
+        headers += [f'报表数 {d}', f'附注数 {d}', f'差额 {d}']
+    headers += ['是否勾稽', '是否一致', '定位']
+    col_flag = 5 + len(periods) * 3 + 1
+    col_state = col_flag + 1
+    col_link = col_state + 1
+
+    r = _block_header(ws, r, '二、报表项目逐项勾稽（每个报表项目一行）', headers)
+
+    n = tot = ok = bad = seq = 0
     for sheet in (report.sheets if report else []):
         if not sheet.period_columns():
             continue
+        block = sheet.blocks or {}
         for name, (row, item_col) in sheet.items.items():
             if not name or name.endswith((':', '：')):
                 continue
             if any(w in name for w in ('合计', '总计')):
                 continue
-            n += 1
             tot += 1
-            # 只看属于本栏（左/右）的勾稽结果
-            val_cols = set((sheet.blocks.get(item_col) or {}).keys())
+            val_cols = set((block.get(item_col) or {}).keys())
             checks = [c for c in by_row.get((sheet.name, row), [])
                       if c.cols in val_cols]
+            by_period = {c.period: c for c in checks}
             nc = note_no.get((sheet.name, _rr.normalize_name(name)))
+
+            seq += 1
+            vals = [seq, sheet.name, name,
+                    (nc.actual if nc else ''),
+                    (checks[0].sub_item if checks else '')]
+            any_amount = False
+            for d in periods:
+                vcol = (block.get(item_col) or {}).get(d)
+                # 期间 -> 列号 反查
+                if vcol is None:
+                    for cc0, dd in (block.get(item_col) or {}).items():
+                        if dd == d:
+                            vcol = cc0
+                            break
+                rep_val = cell_value(sheet.name, row, vcol) if vcol else None
+                chk = by_period.get(d)
+                note_val = chk.note_value if chk else None
+                if rep_val:
+                    any_amount = True
+                vals += [rep_val, note_val, (chk.diff if chk else None)]
+
             if checks:
-                bad = [c for c in checks if c.status == 'fail']
-                unk = [c for c in checks if c.status == 'unmatched']
-                if bad:
+                n += 1
+                if any(c.status == 'fail' for c in checks):
                     flag, state = '已勾稽', '有差异'
-                    delta = sum(c.diff or 0 for c in bad)
-                    diff += 1
-                elif unk:
+                    bad += 1
+                elif any(c.status == 'unmatched' for c in checks):
                     flag, state = '已勾稽', '待确认'
-                    delta = None
                 else:
                     flag, state = '已勾稽', '一致'
-                    delta = 0.0
                     ok += 1
             else:
-                # 各期都是 0/空的项目：本来就没有金额，不算"漏勾"
-                has_amount = False
-                for col in (sheet.blocks.get(item_col) or {}):
-                    v = _cell_value(ws_report, sheet.name, row, col)
-                    if v:
-                        has_amount = True
-                        break
-                if has_amount:
-                    flag, state, delta = '未勾稽', '', None
-                else:
-                    flag, state, delta = '—（无金额）', '', None
+                flag, state = ('未勾稽', '') if any_amount else ('—（无金额）', '')
+            if not any_amount and not checks:
+                # 本来就没金额：金额列留空，别显示一串 0
+                for i in range(6, col_flag):
+                    vals[i - 1] = None
+            vals += [flag, state, '']
 
-            vals = [n, sheet.name, name,
-                    (nc.actual if nc else ''),
-                    (checks[0].sub_item if checks else ''),
-                    flag, state, delta, '']
             for i, v in enumerate(vals, 1):
                 cell = ws.cell(r, i, v)
                 cell.font = F_BODY
                 cell.border = BORDER
-                if i == 8 and isinstance(v, (int, float)):
+                if 6 <= i < col_flag and isinstance(v, (int, float)):
                     cell.number_format = FMT_AMOUNT
             color = {'一致': FILL_PASS, '有差异': FILL_FAIL_TARGET,
                      '待确认': FILL_UNKNOWN}.get(state)
             if color:
-                ws.cell(r, 7).fill = color
-            if flag == '未勾稽':
-                ws.cell(r, 6).fill = FILL_UNKNOWN
+                ws.cell(r, col_state).fill = color
+            if flag in ('未勾稽',):
+                ws.cell(r, col_flag).fill = FILL_UNKNOWN
             if checks:
                 target = (note_rows or {}).get((checks[0].note_table,
                                                 checks[0].note_row))
                 if target:
-                    cell = ws.cell(r, 9, f'勾稽底稿!A{target}')
+                    cell = ws.cell(r, col_link, f'勾稽底稿!A{target}')
                     cell.font = Font(name='微软雅黑', size=9, color='0563C1',
                                      underline='single')
                     from openpyxl.worksheet.hyperlink import Hyperlink
@@ -527,8 +546,8 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                         ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
             r += 1
 
-    ws.cell(r, 1, f'小计：报表项目 {int(tot)} 个，已勾稽 {int(ok + diff)} 个'
-                  f'（一致 {int(ok)}，有差异 {int(diff)}）').font = F_HEADER
+    ws.cell(r, 1, f'小计：报表项目 {tot} 个，已勾稽 {n} 个'
+                  f'（一致 {ok}，有差异 {bad}）').font = F_HEADER
     r += 2
     return r
 
