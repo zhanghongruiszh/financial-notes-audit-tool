@@ -477,6 +477,14 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                 continue
             if any(w in name for w in ('合计', '总计')):
                 continue
+            # 营业总收入/营业总成本这类是"总计"概念，不是报表项目；
+            # 其他综合收益的子项同理（见 report_numbering.NO_NOTE_ITEMS）
+            try:
+                import report_numbering as _rn
+                if _rn.is_no_note_item(name):
+                    continue
+            except Exception:
+                pass
             tot += 1
             val_cols = set((block.get(item_col) or {}).keys())
             checks = [c for c in by_row.get((sheet.name, row), [])
@@ -546,7 +554,7 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                         ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
             r += 1
 
-    ws.cell(r, 1, f'小计：报表项目 {tot} 个，已勾稽 {n} 个'
+    ws.cell(r, 1, f'小计：报表项目 {seq} 个，已勾稽 {n} 个'
                   f'（一致 {ok}，有差异 {bad}）').font = F_HEADER
     r += 2
     return r
