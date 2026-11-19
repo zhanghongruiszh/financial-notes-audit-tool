@@ -31,6 +31,10 @@ class CrossCheck:
     period_key: Optional[str]
     note_value: Optional[float]
     note_ref: str                 # 如 "表#17 R4 C2"
+    note_table: int = 0           # 附注表号（用于写到底稿右侧）
+    note_row: int = 0             # 附注表内行号
+    note_col: int = 0             # 附注表内列号
+    note_terms: list = None       # [(行, 列, 系数)]：口径为"余额−准备"时要两项
     sheet: str = ''
     rows: Optional[int] = None
     cols: Optional[int] = None
@@ -213,17 +217,22 @@ def build_cross_checks(model, tables, report):
                 if '价值' in roles:
                     col, basis = roles['价值'], '账面价值'
                     note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
+                    terms = [(tot.row, col.index + 1, 1)]
                 elif '余额' in roles and '准备' in roles:
                     col, basis = roles['余额'], '账面余额−坏账准备'
                     bal = rules.cell_number(tm.ref.grid, tot.row, roles['余额'].index + 1)
                     prov = rules.cell_number(tm.ref.grid, tot.row, roles['准备'].index + 1)
                     note_val = None if (bal is None or prov is None) else bal - prov
+                    terms = [(tot.row, roles['余额'].index + 1, 1),
+                             (tot.row, roles['准备'].index + 1, -1)]
                 elif '余额' in roles:
                     col, basis = roles['余额'], '账面余额'
                     note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
+                    terms = [(tot.row, col.index + 1, 1)]
                 elif '金额' in roles:
                     col, basis = roles['金额'], '金额'
                     note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
+                    terms = [(tot.row, col.index + 1, 1)]
                 else:
                     continue
                 if note_val is None:
@@ -234,6 +243,8 @@ def build_cross_checks(model, tables, report):
                     name=sub.name, period=col.period, period_key=col.period_key,
                     note_value=note_val, basis=basis,
                     note_ref=f'表#{tm.ref.idx} R{tot.row} C{col.index + 1}',
+                    note_table=tm.ref.idx, note_row=tot.row, note_col=col.index + 1,
+                    note_terms=terms,
                 )
                 col_no = sheet.value_col(item_col, col.period)
                 if col_no is None:

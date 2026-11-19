@@ -38,6 +38,8 @@ class TbCheck:
     period: Optional[datetime.date]
     note_value: Optional[float]
     note_ref: str = ''
+    note_row: int = 0              # 附注表内行号（用于写到底稿右侧）
+    note_col: int = 0
     tb_sheet: str = ''
     tb_rows: Optional[int] = None
     tb_cols: Optional[int] = None
@@ -85,6 +87,7 @@ def build_tb_checks(model, tables, tb_sheets):
                     chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
                     label=row.label, period=col.period, note_value=note_val,
                     note_ref=f'表#{tm.ref.idx} R{row.row} C{col.index + 1}',
+                    note_row=row.row, note_col=col.index + 1,
                 )
 
                 tb_row = None

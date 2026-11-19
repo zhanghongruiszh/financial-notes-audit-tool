@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-writer.py — 把勾稽结果写成 Excel 成果表。
+writer.py — 把勾稽结果写成 Excel 成果表（3 个工作表）。
 
-成果表包含
-----------
-1. `勾稽底稿`：逐表还原附注内容，**在每个勾稽点的目标行下方**插入一行
-   `【勾稽校验】…`，单元格里写活公式（点进去就能看见引用了哪几格）。
-      · 差额为 0（≤1 分钱）→ 绿色
-      · 差额非 0          → 差额格深红 + 整行淡红底
-      · 结构没认出来的表   → 标题行标黄，并写一句原因
-2. `差异清单`：把所有有差异的勾稽逐条列出，便于跟进
-3. `勾稽总览`：条数统计
+工作表结构（按需求收拢，避免一堆 sheet 影响可读性）
+----------------------------------------------------
+1. **勾稽底稿**（主体）
+   与 Word 附注一致的顺序与版式逐个表铺开：
+     · 勾稽点**紧贴目标行下方**插入一行【勾稽校验】，写活公式
+     · 表格**最右侧**接报表勾稽列：报表数（粘贴）+ 差额（活公式 = 附注 − 报表）
+       现金流量表补充资料那张表右侧再接 TB 核对列
+2. **汇总表**
+   勾稽总览（各核对类型条数与结果）+ 内部勾稽的差异清单
+3. **完整性**
+   未披露汇总、附注号勾稽、附注内跨表——都是清单性质，放一起
 
-设计取舍
---------
-不做"列位一一对应"的还原（Word 合并单元格千奇百怪），而是保证
-**「一个科目下方紧跟着它的校验行」**，公式直接指向参与运算的单元格，
-这样点公式就能立刻定位问题。
+为什么报表数用"粘贴值 + 差额公式"
+----------------------------------
+不把整份报表复制进工作簿，是为了不让 sheet 数量膨胀。报表数原样贴在右侧独立列，
+差额用公式算，点开就能看到"附注哪一格 − 报表哪一格"，可追溯性不丢。
 """
 
 import datetime
@@ -25,7 +26,6 @@ from collections import Counter
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.formatting.rule import CellIsRule
 
 import rules
 
@@ -42,12 +42,15 @@ FILL_HEADER = PatternFill('solid', start_color='F2F4F8', end_color='F2F4F8')
 
 F_BODY = Font(name='微软雅黑', size=9, color='000000')
 F_CHECK = Font(name='微软雅黑', size=9, color='1F497D')
+F_REPORT = Font(name='微软雅黑', size=9, color='7030A0')
 
 FILL_PASS = PatternFill('solid', start_color='E2EFDA', end_color='E2EFDA')
 FILL_FAIL_TARGET = PatternFill('solid', start_color='FFC7CE', end_color='FFC7CE')
 FILL_FAIL_ROW = PatternFill('solid', start_color='FDE2E2', end_color='FDE2E2')
 FILL_UNKNOWN = PatternFill('solid', start_color='FFF2CC', end_color='FFF2CC')
 FILL_CHECK_ROW = PatternFill('solid', start_color='F7F9FC', end_color='F7F9FC')
+FILL_REPORT_HDR = PatternFill('solid', start_color='E8DFF5', end_color='E8DFF5')
+FILL_TB_HDR = PatternFill('solid', start_color='DDEBF7', end_color='DDEBF7')
 
 THIN = Side(style='thin', color='D9D9D9')
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -56,9 +59,13 @@ FMT_AMOUNT = '#,##0.00;[Red](#,##0.00);"-"'
 FMT_RATIO = '0.00%;[Red]-0.00%;"-"'
 FMT_DATE = 'yyyy-mm-dd'
 
+REPORT_COL_START = 11          # K 列起：报表勾稽
+TB_COL_START_OFFSET = 2        # 报表块之后接 TB 块
+
+
+# ---------------------------------------------------------------- 基础写入
 
 def _write_value(ws, row, col, value):
-    """写一个单元格并按类型设格式。"""
     if value is None:
         return
     cell = ws.cell(row, col, value)
@@ -81,13 +88,56 @@ def _column_is_ratio(tm, col_index):
     return False
 
 
+def _period_slots(cross, tb_checks, limit=3):
+    """右侧列的期间顺序（最近的一期在最左）。"""
+    periods = []
+    for cc in (cross or []):
+        if cc.period and cc.period not in periods:
+            periods.append(cc.period)
+    for t in (tb_checks or []):
+        if t.period and t.period not in periods:
+            periods.append(t.period)
+    periods.sort(reverse=True)
+    return periods[:limit]
+
+
+def _col_map(periods):
+    """{期间: (报表数列, 差额列)} 和 {期间: (TB数列, TB差额列)}"""
+    report = {}
+    tb = {}
+    for i, p in enumerate(periods):
+        report[p] = (REPORT_COL_START + i * 2, REPORT_COL_START + i * 2 + 1)
+        base = REPORT_COL_START + len(periods) * 2 + TB_COL_START_OFFSET
+        tb[p] = (base + i * 2, base + i * 2 + 1)
+    return report, tb
+
+
+def _write_right_headers(ws, row, periods, report_map, tb_map, has_tb):
+    for p in periods:
+        rc, dc = report_map[p]
+        for col, text, fill in ((rc, f'报表数 {p}', FILL_REPORT_HDR),
+                                (dc, f'差额 {p}', FILL_REPORT_HDR)):
+            c = ws.cell(row, col, text)
+            c.font = F_REPORT
+            c.fill = fill
+            c.alignment = Alignment(horizontal='center')
+            c.border = BORDER
+        if has_tb:
+            tc, tdc = tb_map[p]
+            for col, text in ((tc, f'TB数 {p}'), (tdc, f'TB差额 {p}')):
+                c = ws.cell(row, col, text)
+                c.font = F_REPORT
+                c.fill = FILL_TB_HDR
+                c.alignment = Alignment(horizontal='center')
+                c.border = BORDER
+
+
 # ---------------------------------------------------------------- 底稿
 
-def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_rows):
-    """写一张表，并在勾稽点下方插校验行。返回下一可用行号。"""
+def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
+                 global_rows, report_by_row, tb_by_row, report_map, tb_map):
     grid = tm.ref.grid
 
-    # 表标题
     ws.cell(row_ptr, 1, f'{tm.chapter} ｜ {tm.sub_item} ｜ 表#{tm.ref.idx} '
                         f'（{tm.ref.rows}行×{tm.ref.cols}列）'
                         f'｜ {tm.table_type_name or "未分类"}')
@@ -97,7 +147,6 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_r
         ws.cell(row_ptr, c).fill = FILL_TABLE_TITLE
     row_ptr += 1
 
-    # 结构没认出来 → 标黄 + 说明；期间待确认只作提示，不整表标黄
     hard = [w for w in tm.warnings if not w.startswith('（期间待确认）')]
     soft = [w for w in tm.warnings if w.startswith('（期间待确认）')]
     if hard:
@@ -125,7 +174,6 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_r
             _write_value(ws, row_ptr, c_idx, value)
             if _column_is_ratio(tm, c_idx - 1) and isinstance(value, float):
                 ws.cell(row_ptr, c_idx).number_format = FMT_RATIO
-        # 表头行加底色
         kind = next((r.kind for r in tm.rows if r.row == r_idx), None)
         if kind == 'header':
             for c_idx in range(1, tm.ref.cols + 1):
@@ -134,9 +182,60 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_r
                 cell.fill = FILL_HEADER
         src_to_dst[r_idx] = row_ptr
         global_rows[(tm.ref.idx, r_idx)] = row_ptr
+
+        # 右侧：报表勾稽 / TB 核对（写在同一行的右侧列）
+        for cc in report_by_row.get((tm.ref.idx, r_idx), []):
+            if cc.period in report_map:
+                rc, dc = report_map[cc.period]
+                if cc.report_value is not None:
+                    cell = ws.cell(row_ptr, rc, cc.report_value)
+                    cell.font = F_REPORT
+                    cell.number_format = FMT_AMOUNT
+                    cell.border = BORDER
+                    # 附注侧可能是"余额−准备"，按 terms 拼出来，不能只取一格
+                    parts = []
+                    for i, (rr, cc0, coef) in enumerate(
+                            cc.note_terms or [(cc.note_row, cc.note_col, 1)]):
+                        ref = f'{get_column_letter(cc0)}{row_ptr}'
+                        if i == 0:
+                            parts.append(f'-{ref}' if coef < 0 else ref)
+                        else:
+                            parts.append(('-' if coef < 0 else '+') + ref)
+                    expr = ''.join(parts)
+                    cell_diff = ws.cell(row_ptr, dc,
+                                        f'=({expr})-{get_column_letter(rc)}{row_ptr}')
+                    cell_diff.number_format = FMT_AMOUNT
+                    cell_diff.border = BORDER
+                    cell_diff.fill = (FILL_PASS if cc.status == 'pass'
+                                      else FILL_FAIL_TARGET if cc.status == 'fail'
+                                      else FILL_UNKNOWN)
+                else:
+                    cell = ws.cell(row_ptr, rc, '（未匹配）')
+                    cell.font = F_REPORT
+                    cell.fill = FILL_UNKNOWN
+                    cell.border = BORDER
+                stats['report_cells'] += 1
+
+        for tc in tb_by_row.get((tm.ref.idx, r_idx), []):
+            if tc.period in tb_map:
+                tcol, tdcol = tb_map[tc.period]
+                if tc.tb_value is not None:
+                    cell = ws.cell(row_ptr, tcol, tc.tb_value)
+                    cell.font = F_REPORT
+                    cell.number_format = FMT_AMOUNT
+                    cell.border = BORDER
+                    note_ref = f'{get_column_letter(tc.note_col)}{row_ptr}'
+                    cell_diff = ws.cell(row_ptr, tdcol,
+                                        f'={note_ref}-{get_column_letter(tcol)}{row_ptr}')
+                    cell_diff.number_format = FMT_AMOUNT
+                    cell_diff.border = BORDER
+                    cell_diff.fill = (FILL_PASS if tc.status == 'pass'
+                                      else FILL_FAIL_TARGET if tc.status == 'fail'
+                                      else FILL_UNKNOWN)
+                stats['tb_cells'] += 1
+
         row_ptr += 1
 
-        # 这一行是勾稽目标 → 紧跟着插校验行
         for item in checks_by_row.get(r_idx, []):
             row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
                                        row_ptr, stats, global_rows)
@@ -145,7 +244,6 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats, global_r
 
 
 def _cell_ref(term, src_to_dst, global_rows, own_table_idx):
-    """把一个 Term 翻译成单元格地址；跨表引用查全局行号映射。"""
     tid = term.table_idx or own_table_idx
     if tid == own_table_idx:
         row = src_to_dst.get(term.row, term.row)
@@ -171,7 +269,6 @@ def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
 
 
 def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, global_rows):
-    """写一行【勾稽校验】。"""
     res = results_by_key.get(id(item))
     own_idx = item.table_idx
     target_ref = (f'{get_column_letter(item.target_col)}'
@@ -187,14 +284,13 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         den = _terms_expr(item, item.den, src_to_dst, global_rows, own_idx)
         formula = (f'={target_ref}-({num})/({den})'
                    if num is not None and den is not None else None)
-        number_format = '0.00%;[Red]-0.00%;"-"'
+        number_format = FMT_RATIO
     else:
         expr = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
         formula = f'={target_ref}-({expr})' if expr is not None else None
         number_format = FMT_AMOUNT
 
     if formula is None:
-        # 引用了还没写出去的表（文档顺序在后），无法写活公式
         target_cell = ws.cell(row_ptr, item.target_col, '（跨表引用不可用）')
         target_cell.fill = FILL_UNKNOWN
         target_cell.font = F_CHECK
@@ -216,9 +312,9 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         target_cell.fill = FILL_PASS
         stats['pass'] += 1
     else:
-        target_cell.fill = FILL_FAIL_TARGET      # 差额格深红
+        target_cell.fill = FILL_FAIL_TARGET
         for c in range(1, item.target_col + 1):
-            ws.cell(row_ptr, c).fill = FILL_FAIL_ROW   # 整行淡红底
+            ws.cell(row_ptr, c).fill = FILL_FAIL_ROW
         ws.cell(row_ptr, item.target_col).fill = FILL_FAIL_TARGET
         stats['fail'] += 1
 
@@ -227,345 +323,148 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     return row_ptr + 1
 
 
-# ---------------------------------------------------------------- 差异清单
+# ---------------------------------------------------------------- 汇总表
 
-def _write_diff_sheet(ws, results):
-    headers = ['序号', '章', '子项目', '表号', '规则', '校验说明', '期间',
-               '期望值', '实际值', '差额']
+def _block_header(ws, row, title, headers, widths=None):
+    c = ws.cell(row, 1, title)
+    c.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+    row += 1
     for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
-        c.font = F_TITLE
-        c.fill = FILL_TITLE
-        c.alignment = Alignment(horizontal='center')
+        cell = ws.cell(row, i, h)
+        cell.font = F_TITLE
+        cell.fill = FILL_TITLE
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = BORDER
+    return row + 1
 
-    fails = [r for r in results if r.status == 'fail']
+
+def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
+                         tb_count, nn_count, nx_count, disclosure_count,
+                         source_note=''):
+    ws.cell(1, 1, '勾稽汇总表').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
+    r = 3
+
+    # 一、总览
+    ws.cell(r, 1, '一、勾稽总览').font = F_HEADER
+    r += 1
+    rows = [('附注文件', model.path),
+            ('本次采用的底稿', source_note or '原始文件'),
+            ('主要项目附注章', len(model.chapters)),
+            ('子项目合计', len(model.sub_items)),
+            ('表格总数', len(tables))]
+    for k, v in rows:
+        ws.cell(r, 1, k).font = F_BODY
+        ws.cell(r, 2, v).font = F_BODY
+        r += 1
+
+    def group(name, total, ok, bad, other=None, other_label='待确认'):
+        nonlocal r
+        ws.cell(r, 1, name).font = F_BODY
+        ws.cell(r, 2, total).font = F_BODY
+        ws.cell(r, 3, f'平 {ok}').font = F_BODY
+        bad_cell = ws.cell(r, 4, f'有差异 {bad}')
+        bad_cell.font = Font(name='微软雅黑', size=9, bold=True,
+                             color='9C0006' if bad else '000000')
+        if other is not None:
+            ws.cell(r, 5, f'{other_label} {other}').font = F_BODY
+        r += 1
+
+    r += 1
+    for i, h in enumerate(['核对类型', '条数', '结果', '', ''], 1):
+        c = ws.cell(r, i, h)
+        if h:
+            c.font = F_HEADER
+    r += 1
+    group('附注内部勾稽', stats['pass'] + stats['fail'] + stats['skip'],
+          stats['pass'], stats['fail'], stats['skip'], '无法计算')
+    group('报表勾稽', stats['cross_pass'] + stats['cross_fail'] + stats['cross_unmatched'],
+          stats['cross_pass'], stats['cross_fail'], stats['cross_unmatched'])
+    group('TB现金流核对', stats['tb_pass'] + stats['tb_fail'] + stats['tb_unmatched'],
+          stats['tb_pass'], stats['tb_fail'], stats['tb_unmatched'])
+    group('附注号勾稽', stats['nn_pass'] + stats['nn_fail'] + stats['nn_unmatched'],
+          stats['nn_pass'], stats['nn_fail'], stats['nn_unmatched'])
+    group('附注内跨表', stats['nx_pass'] + stats['nx_fail'] + stats['nx_unmatched'],
+          stats['nx_pass'], stats['nx_fail'], stats['nx_unmatched'])
+    ws.cell(r, 1, '未披露候选（人工判断）').font = F_BODY
+    ws.cell(r, 2, disclosure_count).font = F_BODY
+    r += 2
+
+    # 二、差异清单（内部勾稽）
+    fails = [x for x in results if x.status == 'fail']
+    r = _block_header(ws, r, '二、附注内部勾稽差异清单',
+                      ['序号', '章', '子项目', '表号', '规则', '校验说明', '期间',
+                       '期望值', '实际值', '差额'])
     for n, res in enumerate(fails, 1):
         it = res.item
-        period = ''
-        if it.period:
-            period = str(it.period)
-        elif it.period_key:
-            period = it.period_key
+        period = str(it.period) if it.period else (it.period_key or '')
         vals = [n, it.chapter, it.sub_item, it.table_idx, it.rule_id, it.label,
                 period, res.expected, res.actual, res.diff]
         for i, v in enumerate(vals, 1):
-            cell = ws.cell(n + 1, i, v)
+            cell = ws.cell(r, i, v)
             cell.font = F_BODY
             cell.border = BORDER
             if i in (8, 9, 10) and isinstance(v, (int, float)):
                 cell.number_format = ('0.00%;[Red]-0.00%' if getattr(it, 'is_ratio', False)
                                       else FMT_AMOUNT)
-        ws.cell(n + 1, 10).fill = FILL_FAIL_TARGET
+        ws.cell(r, 10).fill = FILL_FAIL_TARGET
+        r += 1
+    if not fails:
+        ws.cell(r, 1, '（无差异）').font = F_BODY
+        r += 1
+    r += 1
 
-    widths = [6, 22, 18, 7, 9, 46, 12, 15, 15, 13]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A2'
-
-
-# ---------------------------------------------------------------- 总览
-
-def _write_summary_sheet(ws, stats, results, model, tables, source_note=''):
-    rows = [
-        ('附注文件', model.path),
-        ('主要项目附注章', len(model.chapters)),
-        ('子项目合计', len(model.sub_items)),
-        ('表格总数', len(tables)),
-        ('附注内部勾稽', len(results)),
-        ('  通过', stats['pass']),
-        ('  有差异', stats['fail']),
-        ('  无法计算', stats['skip']),
-        ('结构存疑的表', stats['unclear_tables']),
-    ]
-    if source_note:
-        rows.insert(1, ('本次采用的底稿', source_note))
-    if stats.get('cross_pass') or stats.get('cross_fail') or stats.get('cross_unmatched'):
-        rows.extend([
-            ('报表勾稽', stats['cross_pass'] + stats['cross_fail'] + stats['cross_unmatched']),
-            ('  平', stats['cross_pass']),
-            ('  有差异', stats['cross_fail']),
-            ('  待确认', stats['cross_unmatched']),
-        ])
-    if stats.get('tb_pass') or stats.get('tb_fail') or stats.get('tb_unmatched'):
-        rows.extend([
-            ('TB现金流核对', stats['tb_pass'] + stats['tb_fail'] + stats['tb_unmatched']),
-            ('  平', stats['tb_pass']),
-            ('  有差异', stats['tb_fail']),
-            ('  待确认', stats['tb_unmatched']),
-        ])
-    if stats.get('nn_pass') or stats.get('nn_fail') or stats.get('nn_unmatched'):
-        rows.extend([
-            ('附注号勾稽', stats['nn_pass'] + stats['nn_fail'] + stats['nn_unmatched']),
-            ('  一致', stats['nn_pass']),
-            ('  不一致', stats['nn_fail']),
-            ('  待确认', stats['nn_unmatched']),
-        ])
-    if stats.get('nx_pass') or stats.get('nx_fail') or stats.get('nx_unmatched'):
-        rows.extend([
-            ('附注内跨表', stats['nx_pass'] + stats['nx_fail'] + stats['nx_unmatched']),
-            ('  平', stats['nx_pass']),
-            ('  有差异', stats['nx_fail']),
-            ('  待确认', stats['nx_unmatched']),
-        ])
-    if stats.get('missing_count'):
-        rows.append(('未披露候选（人工判断）', stats['missing_count']))
-    ws.cell(1, 1, '勾稽总览').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
-    for i, (k, v) in enumerate(rows, 3):
-        ws.cell(i, 1, k).font = F_HEADER
-        c = ws.cell(i, 2, v)
-        c.font = F_BODY
-        if k.strip() == '有差异' and isinstance(v, int) and v > 0:
-            c.font = Font(name='微软雅黑', size=9, bold=True, color='9C0006')
-    ws.column_dimensions['A'].width = 22
-    ws.column_dimensions['B'].width = 70
-
-    # 按规则统计
-    row = len(rows) + 5
-    ws.cell(row, 1, '按规则分布').font = F_HEADER
-    by_rule = Counter(r.item.rule_id for r in results)
+    # 三、按规则 / 表类型分布
+    by_rule = Counter(x.item.rule_id for x in results)
     rule_name = {'V-SUM': '合计行 = 上方明细之和',
                  'V-GRP': '「其中：」父行 = 子项之和',
                  'H-SUM': '合计列 = 其余列之和',
                  'R-NET': '账面价值 = 账面余额 − 准备',
                  'R-NBV': '账面价值 = 原值 − 折旧 − 减值',
                  'R-MOVE': '期末 = 期初 + 本期增加 − 本期减少',
-                 'X-NOTE': '附注合计 vs 报表科目'}
-    for i, (k, v) in enumerate(sorted(by_rule.items()), row + 1):
-        ws.cell(i, 1, k).font = F_BODY
-        ws.cell(i, 2, f'{rule_name.get(k, "")}　{v} 条').font = F_BODY
-
-    # 按附注表类型统计
+                 'R-PCT': '比例重算'}
+    ws.cell(r, 1, '三、规则与表类型分布').font = F_HEADER
+    r += 1
+    for k, v in sorted(by_rule.items()):
+        ws.cell(r, 1, k).font = F_BODY
+        ws.cell(r, 2, f'{rule_name.get(k, "")}').font = F_BODY
+        ws.cell(r, 3, f'{v} 条').font = F_BODY
+        r += 1
     try:
         import table_types
-        dist = table_types.summarize(tables)
+        for name, n in table_types.summarize(tables).items():
+            ws.cell(r, 1, '表类型').font = F_BODY
+            ws.cell(r, 2, name).font = F_BODY
+            ws.cell(r, 3, f'{n} 张').font = F_BODY
+            r += 1
     except Exception:
-        dist = {}
-    if dist:
-        row2 = row + len(by_rule) + 3
-        ws.cell(row2, 1, '按附注表类型分布').font = F_HEADER
-        for i, (name, n) in enumerate(dist.items(), row2 + 1):
-            ws.cell(i, 1, name).font = F_BODY
-            ws.cell(i, 2, f'{n} 张').font = F_BODY
+        pass
+
+    for col, w in (('A', 26), ('B', 46), ('C', 18), ('D', 18), ('E', 16),
+                   ('F', 46), ('G', 12), ('H', 16), ('I', 16), ('J', 14)):
+        ws.column_dimensions[col].width = w
 
 
-# ---------------------------------------------------------------- 报表勾稽
+# ---------------------------------------------------------------- 完整性
 
-def _copy_statement_sheets(wb, report):
-    """把报表的三张表复制进成果表，这样跨表公式能直接引用。"""
-    import openpyxl
-    src = openpyxl.load_workbook(report.path, data_only=True)
-    for sheet in report.sheets:
-        if sheet.name not in src.sheetnames:
-            continue
-        s_ws = src[sheet.name]
-        name = sheet.name[:31]
-        if name in wb.sheetnames:
-            continue
-        d_ws = wb.create_sheet(name)
-        for r in range(1, s_ws.max_row + 1):
-            for c in range(1, s_ws.max_column + 1):
-                v = s_ws.cell(r, c).value
-                if v is None:
-                    continue
-                cell = d_ws.cell(r, c, v)
-                if isinstance(v, float):
-                    cell.number_format = FMT_AMOUNT
-        d_ws.column_dimensions['A'].width = 40
-
-
-def _write_cross_sheet(ws, cross, stats):
-    headers = ['序号', '范围', '子项目', '期间', '附注金额', '取数口径', '报表科目',
-               '报表数', '差额', '状态', '说明']
-    for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
-        c.font = F_TITLE
-        c.fill = FILL_TITLE
-        c.alignment = Alignment(horizontal='center')
-
-    r = 2
-    for n, cc in enumerate(cross, 1):
-        period = str(cc.period) if cc.period else (cc.period_key or '')
-        vals = [n, cc.scope, cc.sub_item, period, cc.note_value, cc.basis,
-                cc.sheet or '（未找到）', cc.report_value, None, '', cc.note]
-        for i, v in enumerate(vals, 1):
-            cell = ws.cell(r, i, v)
-            cell.font = F_BODY
-            cell.border = BORDER
-            if i in (5, 8, 9):
-                cell.number_format = FMT_AMOUNT
-
-        # 差额写成活公式：附注 − 报表
-        if cc.sheet and cc.rows and cc.cols:
-            ws.cell(r, 9, f"=E{r}-'{cc.sheet}'!{get_column_letter(cc.cols)}{cc.rows}")
-            if cc.status == 'pass':
-                ws.cell(r, 9).fill = FILL_PASS
-                ws.cell(r, 10, '平').font = F_BODY
-                stats['cross_pass'] += 1
-            elif cc.status == 'fail':
-                for c in range(1, 9):
-                    ws.cell(r, c).fill = FILL_FAIL_ROW
-                ws.cell(r, 9).fill = FILL_FAIL_TARGET
-                ws.cell(r, 10, '有差异').font = Font(name='微软雅黑', size=9, color='9C0006')
-                stats['cross_fail'] += 1
-            else:
-                ws.cell(r, 9).fill = FILL_UNKNOWN
-                ws.cell(r, 10, '待确认').font = F_BODY
-                stats['cross_unmatched'] += 1
-        else:
-            ws.cell(r, 10, '未匹配').font = F_BODY
-            ws.cell(r, 10).fill = FILL_UNKNOWN
-            stats['cross_unmatched'] += 1
-        r += 1
-
-    widths = [6, 8, 20, 12, 16, 20, 30, 16, 14, 10, 26]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A2'
-
-
-# ---------------------------------------------------------------- TB 现金流核对
-
-def _copy_tb_sheets(wb, tb_xlsx, sheet_names):
-    """把用到的 TB 现金流量表复制进成果表，让差额公式可以直接引用。"""
-    import openpyxl
-    if not tb_xlsx:
-        return
-    src = openpyxl.load_workbook(tb_xlsx, data_only=True)
-    for name in sheet_names:
-        if not name or name in wb.sheetnames or name not in src.sheetnames:
-            continue
-        s_ws = src[name]
-        d_ws = wb.create_sheet(name[:31])
-        for r in range(1, min(s_ws.max_row, 300) + 1):
-            for c in range(1, min(s_ws.max_column, 40) + 1):
-                v = s_ws.cell(r, c).value
-                if v is None:
-                    continue
-                cell = d_ws.cell(r, c, v)
-                if isinstance(v, float):
-                    cell.number_format = FMT_AMOUNT
-        d_ws.column_dimensions['A'].width = 46
-
-
-def _write_tb_sheet(ws, tb_checks, stats):
-    headers = ['序号', '章', '子项目', '项目', '期间', '附注数',
-               'TB工作表', 'TB数', '差额', '状态', '说明']
-    for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
-        c.font = F_TITLE
-        c.fill = FILL_TITLE
-        c.alignment = Alignment(horizontal='center')
-
-    r = 2
-    for n, chk in enumerate(tb_checks, 1):
-        period = str(chk.period) if chk.period else ''
-        vals = [n, chk.chapter, chk.sub_item, chk.label, period, chk.note_value,
-                chk.tb_sheet or '（未找到）', chk.tb_value, None, '', chk.note]
-        for i, v in enumerate(vals, 1):
-            cell = ws.cell(r, i, v)
-            cell.font = F_BODY
-            cell.border = BORDER
-            if i in (6, 8, 9):
-                cell.number_format = FMT_AMOUNT
-
-        if chk.tb_sheet and chk.tb_rows and chk.tb_cols:
-            ws.cell(r, 9, f"=F{r}-'{chk.tb_sheet}'!{get_column_letter(chk.tb_cols)}{chk.tb_rows}")
-            if chk.status == 'pass':
-                ws.cell(r, 9).fill = FILL_PASS
-                ws.cell(r, 10, '平').font = F_BODY
-                stats['tb_pass'] += 1
-            elif chk.status == 'fail':
-                for c in range(1, 9):
-                    ws.cell(r, c).fill = FILL_FAIL_ROW
-                ws.cell(r, 9).fill = FILL_FAIL_TARGET
-                ws.cell(r, 10, '有差异').font = Font(name='微软雅黑', size=9, color='9C0006')
-                stats['tb_fail'] += 1
-            else:
-                ws.cell(r, 9).fill = FILL_UNKNOWN
-                ws.cell(r, 10, '待确认').font = F_BODY
-                stats['tb_unmatched'] += 1
-        else:
-            ws.cell(r, 10, '未匹配').font = F_BODY
-            ws.cell(r, 10).fill = FILL_UNKNOWN
-            stats['tb_unmatched'] += 1
-        r += 1
-
-    widths = [6, 22, 20, 44, 12, 16, 16, 16, 14, 10, 26]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A2'
-
-
-# ---------------------------------------------------------------- 附注号勾稽
-
-def _write_note_no_sheet(ws, checks, stats):
-    headers = ['序号', '工作表', '行号', '科目', '报表附注号', '附注实际编号', '状态', '说明']
-    for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
-        c.font = F_TITLE
-        c.fill = FILL_TITLE
-        c.alignment = Alignment(horizontal='center')
-
-    r = 2
-    for n, chk in enumerate(checks, 1):
-        vals = [n, chk.sheet, chk.row, chk.item_name, chk.actual or '（空）',
-                chk.expected, '', chk.note]
-        for i, v in enumerate(vals, 1):
-            cell = ws.cell(r, i, v)
-            cell.font = F_BODY
-            cell.border = BORDER
-
-        st = ws.cell(r, 7)
-        if chk.status == 'pass':
-            ws.cell(r, 7, '一致')
-            for c in (5, 6, 7):
-                ws.cell(r, c).fill = FILL_PASS
-            stats['nn_pass'] += 1
-        elif chk.status == 'fail':
-            ws.cell(r, 7, '不一致')
-            for c in range(1, 8):
-                ws.cell(r, c).fill = FILL_FAIL_ROW
-            ws.cell(r, 5).fill = FILL_FAIL_TARGET
-            ws.cell(r, 7).font = Font(name='微软雅黑', size=9, color='9C0006')
-            stats['nn_fail'] += 1
-        else:
-            ws.cell(r, 7, '待确认')
-            ws.cell(r, 7).fill = FILL_UNKNOWN
-            stats['nn_unmatched'] += 1
-        st.value = ws.cell(r, 7).value
-        r += 1
-
-    widths = [6, 16, 8, 40, 16, 16, 10, 34]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A2'
-
-
-# ---------------------------------------------------------------- 未披露汇总
-
-def _write_disclosure_sheet(ws, items, stats):
-    """报表有金额、但附注找不到同名小节的科目清单，供人工判断。"""
-    periods = sorted({d for it in items for d in it.amounts}, reverse=True)
-    headers = ['序号', '报表', '行号', '报表科目'] + \
-              [str(d) for d in periods] + ['建议']
-    for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
-        c.font = F_TITLE
-        c.fill = FILL_TITLE
-        c.alignment = Alignment(horizontal='center')
-
-    note = ws.cell(2, 1, '以下科目报表上有金额，但附注主要项目里没有同名小节。'
-                         '请判断是「漏披露」还是「本就不需要披露」。')
-    note.font = Font(name='微软雅黑', size=9, color='B25E00')
-    ws.merge_cells(start_row=2, start_column=1, end_row=2,
-                   end_column=max(len(headers), 2))
-
+def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross):
+    ws.cell(1, 1, '完整性检查').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     r = 3
-    for n, it in enumerate(items, 1):
-        vals = [n, it.sheet, it.row, it.item_name]
-        for d in periods:
-            vals.append(it.amounts.get(d))
-        vals.append('待人工判断')
+
+    # 一、未披露
+    ws.cell(r, 1, '一、报表项目未在附注中披露（供人工判断是漏披露还是无需披露）').font = F_HEADER
+    r += 1
+    periods = sorted({d for it in (disclosure or []) for d in it.amounts}, reverse=True)
+    headers = ['序号', '报表', '行号', '报表科目'] + [str(d) for d in periods] + ['建议']
+    for i, h in enumerate(headers, 1):
+        c = ws.cell(r, i, h)
+        c.font = F_TITLE
+        c.fill = FILL_TITLE
+        c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+    r += 1
+    for n, it in enumerate(disclosure or [], 1):
+        vals = [n, it.sheet, it.row, it.item_name] + \
+               [it.amounts.get(d) for d in periods] + ['待人工判断']
         for i, v in enumerate(vals, 1):
             cell = ws.cell(r, i, v)
             cell.font = F_BODY
@@ -573,28 +472,59 @@ def _write_disclosure_sheet(ws, items, stats):
             if 5 <= i <= 4 + len(periods):
                 cell.number_format = FMT_AMOUNT
         ws.cell(r, len(vals)).fill = FILL_UNKNOWN
-        stats['missing_count'] += 1
         r += 1
+    if not disclosure:
+        ws.cell(r, 1, '（无）').font = F_BODY
+        r += 1
+    r += 2
 
-    widths = [6, 16, 8, 40] + [16] * len(periods) + [16]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A3'
-
-
-# ---------------------------------------------------------------- 附注内跨表
-
-def _write_note_cross_sheet(ws, checks, stats):
-    headers = ['序号', '类型', '期间', '子项目A', '表A', '金额A',
-               '子项目B', '表B', '金额B', '差额', '状态', '说明']
-    for i, h in enumerate(headers, 1):
-        c = ws.cell(1, i, h)
+    # 二、附注号勾稽
+    ws.cell(r, 1, '二、报表「附注」列 ↔ 附注实际编号').font = F_HEADER
+    r += 1
+    for i, h in enumerate(['序号', '工作表', '行号', '科目', '报表附注号',
+                           '附注实际编号', '状态', '说明'], 1):
+        c = ws.cell(r, i, h)
         c.font = F_TITLE
         c.fill = FILL_TITLE
         c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+    r += 1
+    for n, chk in enumerate(note_no_checks or [], 1):
+        vals = [n, chk.sheet, chk.row, chk.item_name, chk.actual or '（空）',
+                chk.expected, '', chk.note]
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+        if chk.status == 'pass':
+            ws.cell(r, 7, '一致')
+            ws.cell(r, 7).fill = FILL_PASS
+        elif chk.status == 'fail':
+            ws.cell(r, 7, '不一致')
+            for c in range(1, 8):
+                ws.cell(r, c).fill = FILL_FAIL_ROW
+            ws.cell(r, 7).font = Font(name='微软雅黑', size=9, color='9C0006')
+        else:
+            ws.cell(r, 7, '待确认')
+            ws.cell(r, 7).fill = FILL_UNKNOWN
+        r += 1
+    if not note_no_checks:
+        ws.cell(r, 1, '（无）').font = F_BODY
+        r += 1
+    r += 2
 
-    r = 2
-    for n, chk in enumerate(checks, 1):
+    # 三、附注内跨表
+    ws.cell(r, 1, '三、附注内跨表 / 上下文相关项目').font = F_HEADER
+    r += 1
+    for i, h in enumerate(['序号', '类型', '期间', '子项目A', '表A', '金额A',
+                           '子项目B', '表B', '金额B', '差额', '状态', '说明'], 1):
+        c = ws.cell(r, i, h)
+        c.font = F_TITLE
+        c.fill = FILL_TITLE
+        c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+    r += 1
+    for n, chk in enumerate(note_cross or [], 1):
         vals = [n, chk.kind, str(chk.period) if chk.period else '', chk.sub_a,
                 f'表#{chk.table_a}', chk.value_a, chk.sub_b, f'表#{chk.table_b}',
                 chk.value_b, chk.diff, '', chk.note]
@@ -604,27 +534,27 @@ def _write_note_cross_sheet(ws, checks, stats):
             cell.border = BORDER
             if i in (6, 9, 10):
                 cell.number_format = FMT_AMOUNT
-
         if chk.status == 'pass':
-            ws.cell(r, 11, '平').font = F_BODY
+            ws.cell(r, 11, '平')
             ws.cell(r, 10).fill = FILL_PASS
-            stats['nx_pass'] += 1
         elif chk.status == 'fail':
-            ws.cell(r, 11, '有差异').font = Font(name='微软雅黑', size=9, color='9C0006')
+            ws.cell(r, 11, '有差异')
             for c in range(1, 11):
                 ws.cell(r, c).fill = FILL_FAIL_ROW
             ws.cell(r, 10).fill = FILL_FAIL_TARGET
-            stats['nx_fail'] += 1
+            ws.cell(r, 11).font = Font(name='微软雅黑', size=9, color='9C0006')
         else:
-            ws.cell(r, 11, '待确认').font = F_BODY
+            ws.cell(r, 11, '待确认')
             ws.cell(r, 11).fill = FILL_UNKNOWN
-            stats['nx_unmatched'] += 1
+        r += 1
+    if not note_cross:
+        ws.cell(r, 1, '（无）').font = F_BODY
         r += 1
 
-    widths = [6, 10, 12, 20, 8, 16, 20, 8, 16, 14, 10, 40]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = 'A2'
+    for col, w in (('A', 8), ('B', 14), ('C', 14), ('D', 34), ('E', 16),
+                   ('F', 16), ('G', 22), ('H', 10), ('I', 16), ('J', 14),
+                   ('K', 10), ('L', 40)):
+        ws.column_dimensions[col].width = w
 
 
 # ---------------------------------------------------------------- 入口
@@ -633,7 +563,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                    report=None, tb_checks=None, tb_xlsx=None,
                    note_no_checks=None, disclosure=None, note_cross=None,
                    source_note='', log=print):
-    """生成成果表。"""
+    """生成成果表：勾稽底稿 / 汇总表 / 完整性 三张。"""
     wb = Workbook()
     ws = wb.active
     ws.title = '勾稽底稿'
@@ -641,7 +571,52 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     ws.cell(1, 1, '财务报表附注勾稽底稿').font = Font(name='微软雅黑', size=14, bold=True,
                                               color='1F497D')
     ws.cell(2, 1, '绿色=已平（差额≤0.01）　深红=有差异　淡红底=该条有差异　'
-                  '黄色=结构存疑/无法计算').font = Font(name='微软雅黑', size=9, color='666666')
+                  '黄色=结构存疑/无法确认').font = Font(name='微软雅黑', size=9, color='666666')
+
+    stats = Counter({'pass': 0, 'fail': 0, 'skip': 0, 'unclear_tables': 0,
+                     'cross_pass': 0, 'cross_fail': 0, 'cross_unmatched': 0,
+                     'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0,
+                     'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0,
+                     'nx_pass': 0, 'nx_fail': 0, 'nx_unmatched': 0,
+                     'missing_count': 0, 'report_cells': 0, 'tb_cells': 0})
+
+    # 先统计各核对类型的结果（用于汇总表）
+    for cc in (cross or []):
+        if cc.status == 'pass':
+            stats['cross_pass'] += 1
+        elif cc.status == 'fail':
+            stats['cross_fail'] += 1
+        else:
+            stats['cross_unmatched'] += 1
+    for tc in (tb_checks or []):
+        if tc.status == 'pass':
+            stats['tb_pass'] += 1
+        elif tc.status == 'fail':
+            stats['tb_fail'] += 1
+        else:
+            stats['tb_unmatched'] += 1
+    for nc in (note_no_checks or []):
+        if nc.status == 'pass':
+            stats['nn_pass'] += 1
+        elif nc.status == 'fail':
+            stats['nn_fail'] += 1
+        else:
+            stats['nn_unmatched'] += 1
+    for xc in (note_cross or []):
+        if xc.status == 'pass':
+            stats['nx_pass'] += 1
+        elif xc.status == 'fail':
+            stats['nx_fail'] += 1
+        else:
+            stats['nx_unmatched'] += 1
+    stats['missing_count'] = len(disclosure or [])
+
+    periods = _period_slots(cross, tb_checks)
+    report_map, tb_map = _col_map(periods)
+
+    # 右侧表头
+    if periods:
+        _write_right_headers(ws, 3, periods, report_map, tb_map, bool(tb_checks))
 
     results_by_key = {id(r.item): r for r in results}
     checks_by_table = {}
@@ -649,47 +624,44 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
         checks_by_table.setdefault((item.chapter, item.sub_item, item.table_idx),
                                    {}).setdefault(item.target_row, []).append(item)
 
-    stats = Counter({'pass': 0, 'fail': 0, 'skip': 0, 'unclear_tables': 0,
-                     'cross_pass': 0, 'cross_fail': 0, 'cross_unmatched': 0,
-                     'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0,
-                     'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0,
-                     'nx_pass': 0, 'nx_fail': 0, 'nx_unmatched': 0,
-                     'missing_count': 0})
-    global_rows = {}          # (表号, 源行号) -> 成果表行号，供跨表公式引用
-    row_ptr = 4
+    report_by_row = {}
+    for cc in (cross or []):
+        report_by_row.setdefault((cc.note_table, cc.note_row), []).append(cc)
+    tb_by_row = {}
+    for tc in (tb_checks or []):
+        tb_by_row.setdefault((tc.table_idx, tc.note_row), []).append(tc)
+
+    global_rows = {}
+    row_ptr = 5
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
         row_ptr = _write_table(ws, tm, checks_by_table.get(key, {}),
-                               results_by_key, row_ptr, stats, global_rows)
-        row_ptr += 1        # 表间空一行
+                               results_by_key, row_ptr, stats, global_rows,
+                               report_by_row, tb_by_row, report_map, tb_map)
+        row_ptr += 1
 
     ws.column_dimensions['A'].width = 46
-    for c in range(2, 12):
+    for c in range(2, 11):
         ws.column_dimensions[get_column_letter(c)].width = 16
-    ws.freeze_panes = 'A4'
+    for p in periods:
+        rc, dc = report_map[p]
+        ws.column_dimensions[get_column_letter(rc)].width = 16
+        ws.column_dimensions[get_column_letter(dc)].width = 13
+        if tb_checks:
+            tc, td = tb_map[p]
+            ws.column_dimensions[get_column_letter(tc)].width = 16
+            ws.column_dimensions[get_column_letter(td)].width = 13
+    ws.freeze_panes = 'A5'
 
-    _write_diff_sheet(wb.create_sheet('差异清单'), results)
-
-    if report is not None:
-        _copy_statement_sheets(wb, report)
-    if cross:
-        _write_cross_sheet(wb.create_sheet('报表勾稽'), cross, stats)
-    if tb_checks is not None:
-        used = sorted({c.tb_sheet for c in tb_checks if c.tb_sheet})
-        _copy_tb_sheets(wb, tb_xlsx, used)
-        _write_tb_sheet(wb.create_sheet('TB现金流核对'), tb_checks, stats)
-    if note_no_checks is not None:
-        _write_note_no_sheet(wb.create_sheet('附注号勾稽'), note_no_checks, stats)
-    if note_cross is not None:
-        _write_note_cross_sheet(wb.create_sheet('附注内跨表'), note_cross, stats)
-    if disclosure is not None:
-        _write_disclosure_sheet(wb.create_sheet('未披露汇总'), disclosure, stats)
-
-    _write_summary_sheet(wb.create_sheet('勾稽总览'), stats, results, model, tables,
-                         source_note=source_note)
+    _write_summary_sheet(wb.create_sheet('汇总表'), stats, results, model, tables,
+                         len(cross or []), len(tb_checks or []),
+                         len(note_no_checks or []), len(note_cross or []),
+                         len(disclosure or []), source_note=source_note)
+    _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
+                           note_no_checks, note_cross)
 
     wb.save(out_path)
-    log(f'[输出] 底稿已生成：{out_path}')
+    log(f'[输出] 成果表已生成：{out_path}')
     log(f'[输出] 附注内部勾稽 {len(results)} 条：通过 {stats["pass"]}，'
         f'有差异 {stats["fail"]}，无法计算 {stats["skip"]}')
     if cross:
@@ -701,10 +673,9 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     if note_no_checks:
         log(f'[输出] 附注号勾稽 {len(note_no_checks)} 条：一致 {stats["nn_pass"]}，'
             f'不一致 {stats["nn_fail"]}，待确认 {stats["nn_unmatched"]}')
-    if disclosure is not None:
-        log(f'[输出] 未披露汇总 {len(disclosure)} 条（报表有金额、附注未找到同名小节，'
-            f'需人工判断）')
     if note_cross:
         log(f'[输出] 附注内跨表 {len(note_cross)} 条：平 {stats["nx_pass"]}，'
             f'有差异 {stats["nx_fail"]}，待确认 {stats["nx_unmatched"]}')
+    if disclosure is not None:
+        log(f'[输出] 未披露汇总 {len(disclosure)} 条（供人工判断）')
     return out_path, dict(stats)
