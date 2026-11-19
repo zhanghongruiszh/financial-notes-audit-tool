@@ -211,6 +211,43 @@ def load_stream(docx_path):
 
 # ---------------------------------------------------------------- 转 docx
 
+def _run_com_with_timeout(fn, timeout, what):
+    """在独立 STA 线程里跑 Office 自动化，超时就报可操作的错误，避免界面卡死。"""
+    import threading
+    import time
+
+    box = {}
+
+    def target():
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        try:
+            box['value'] = fn()
+        except Exception as exc:            # noqa: BLE001
+            box['error'] = exc
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    deadline = time.time() + timeout
+    while time.time() < deadline and th.is_alive():
+        th.join(0.3)
+
+    if th.is_alive():
+        raise RuntimeError(
+            f'{what}超过 {timeout} 秒没有响应。\n'
+            f'请先关闭所有 Word / Excel 窗口后重试；'
+            f'若仍不行，把附注另存为 .docx、TB 另存为 .xlsx 再放进来。')
+    if 'error' in box:
+        exc = box['error']
+        raise RuntimeError(
+            f'{what}失败：{exc}\n'
+            f'请确认已安装 Office；或先手动把文件另存为 .docx / .xlsx。')
+    return box.get('value')
+
+
 def ensure_docx(src_path, work_dir=None):
     """把 .doc/.docx 归一成 .docx 路径。.doc 走 Word COM 转一次。"""
     src_path = os.path.abspath(src_path)
@@ -226,26 +263,35 @@ def ensure_docx(src_path, work_dir=None):
         return dst
 
     import win32com.client as win32
-    word = win32.DispatchEx('Word.Application')
-    word.Visible = False
-    word.DisplayAlerts = 0
-    try:
+    import com_env
+
+    def _convert():
+        # 打包版里 PyInstaller 会把 _MEI 目录塞进 PATH，Word 子进程继承后可能起不来；
+        # 调 Office 之前先把环境擦干净，调完恢复。
+        word = None
+        with com_env.sanitized():
+            word = win32.DispatchEx('Word.Application')
         try:
-            word.AutomationSecurity = 3
-        except Exception:
-            pass
-        # 注意：Word 的当前工作目录不是本进程的当前目录，
-        # Open/SaveAs2 必须传绝对路径，否则报"这不是有效文件名"。
-        doc = word.Documents.Open(os.path.abspath(src_path), ConfirmConversions=False,
-                                  ReadOnly=True, AddToRecentFiles=False)
-        doc.SaveAs2(os.path.abspath(dst), FileFormat=16)
-        doc.Close(False)
-    finally:
-        try:
-            word.Quit()
-        except Exception:
-            pass
-    return dst
+            word.Visible = False
+            word.DisplayAlerts = 0
+            try:
+                word.AutomationSecurity = 3
+            except Exception:
+                pass
+            # 注意：Word 的当前工作目录不是本进程的当前目录，
+            # Open/SaveAs2 必须传绝对路径，否则报"这不是有效文件名"。
+            doc = word.Documents.Open(os.path.abspath(src_path), ConfirmConversions=False,
+                                      ReadOnly=True, AddToRecentFiles=False)
+            doc.SaveAs2(os.path.abspath(dst), FileFormat=16)
+            doc.Close(False)
+        finally:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+        return dst
+
+    return _run_com_with_timeout(_convert, 120, 'Word 转换附注')
 
 
 # ---------------------------------------------------------------- 章节结构

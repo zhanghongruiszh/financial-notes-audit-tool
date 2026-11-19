@@ -34,6 +34,19 @@ WORK_DIR = os.path.join(tempfile.gettempdir(), 'notes_audit_work')
 os.makedirs(WORK_DIR, exist_ok=True)
 
 
+def _co_init():
+    """工作线程里调 Office 前初始化 COM（STA）。
+
+    Word/Excel 自动化要求调用线程是 STA。界面里这些活都在工作线程跑，
+    不显式初始化的话，打包环境里很容易卡死在 Documents.Open。
+    """
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+
+
 class AuditCheckApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -237,6 +250,7 @@ class AuditCheckApp(tk.Tk):
         self.log('\n' + '=' * 60)
 
         def work():
+            _co_init()
             try:
                 import pipeline
                 res = pipeline.run(notes, report, tb, archive_root=root,
@@ -314,6 +328,7 @@ class AuditCheckApp(tk.Tk):
                 return
 
             def work():
+                _co_init()
                 try:
                     self.log(f'\n[模板] 正在提取骨架：{os.path.basename(path)} ...')
                     sk = template_lib.build_skeleton(path, work_dir=WORK_DIR)
@@ -330,6 +345,7 @@ class AuditCheckApp(tk.Tk):
 
         def do_rebuild():
             def work():
+                _co_init()
                 try:
                     self.log('\n[模板] 从模板库目录里的 Word 文件重建骨架 ...')
                     done = template_lib.rebuild_from_docs(work_dir=WORK_DIR, log=self.log)
@@ -384,6 +400,7 @@ class AuditCheckApp(tk.Tk):
             return
 
         def work():
+            _co_init()
             try:
                 import notes_parser
                 import report_numbering
@@ -423,6 +440,7 @@ class AuditCheckApp(tk.Tk):
             return
 
         def work():
+            _co_init()
             try:
                 self.log(f'\n[编号] 体检：{os.path.basename(doc)}')
                 import notes_parser
@@ -532,11 +550,243 @@ def selftest(out_path):
     return 0 if ok else 1
 
 
+def headless_run(notes, report, tb, out_dir, log_path):
+    """无界面跑一遍完整流程，把日志写到文件。
+
+    给打包后的 exe 做端到端验证用（GUI 里的按钮走的是同一套 pipeline）。
+    """
+    lines = []
+
+    def log(msg):
+        lines.append(str(msg))
+
+    try:
+        # 冻结版里主线程默认不是 STA，Word COM 会卡在 DispatchEx；
+        # 显式初始化一次（GUI 的按钮线程里也做了同样的事）。
+        import pythoncom
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+
+    try:
+        import pipeline
+        log('[headless] 开始')
+        result = pipeline.run(notes, report, tb, archive_root=out_dir, log=log)
+        log('[headless] 完成：' + str(result.get('out_xlsx')))
+        ok = True
+    except Exception:
+        import traceback
+        log('[headless] 失败')
+        log(traceback.format_exc())
+        ok = False
+
+    try:
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+    except Exception:
+        pass
+    return 0 if ok else 1
+
+
+def com_probe(src_doc, log_path):
+    """逐步探测 Word COM 在打包环境里卡在哪一步（诊断用）。"""
+    lines = []
+
+    def step(msg):
+        lines.append(msg)
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+    import os as _os
+    src = _os.path.abspath(src_doc)
+    step('1 开始')
+
+    def try_variant(name, fn):
+        try:
+            fn()
+            step(f'   [{name}] OK')
+            return True
+        except Exception as exc:
+            step(f'   [{name}] 失败: {exc}')
+            return False
+
+    # A: 显式 STA + 可见 Word
+    def a():
+        import pythoncom
+        import win32com.client as win32
+        pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
+        word = win32.DispatchEx('Word.Application')
+        word.Visible = True
+        doc = word.Documents.Open(src)
+        doc.Close(False)
+        word.Quit()
+
+    # B: 不可见 + 只传文件名
+    def b():
+        import win32com.client as win32
+        word = win32.DispatchEx('Word.Application')
+        word.Visible = False
+        doc = word.Documents.Open(FileName=src)
+        doc.Close(False)
+        word.Quit()
+
+    # C: 先打开文档再设属性
+    def c():
+        import win32com.client as win32
+        word = win32.Dispatch('Word.Application')
+        doc = word.Documents.Open(src, ReadOnly=True)
+        doc.Close(False)
+        word.Quit()
+
+    step('2 基本 COM / Excel')
+    try:
+        import win32com.client as win32
+        fso = win32.Dispatch('Scripting.FileSystemObject')
+        step('   FSO OK: C盘存在=%s' % fso.DriveExists('C'))
+    except Exception as exc:
+        step('   FSO 失败: %s' % (exc,))
+    try:
+        excel = win32.DispatchEx('Excel.Application')
+        step('   Excel DispatchEx OK')
+        excel.Quit()
+        step('   Excel Quit OK')
+    except Exception as exc:
+        step('   Excel 失败: %s' % (exc,))
+
+    step('3 Word 分步（先消毒环境）')
+    try:
+        import com_env
+        step('   环境消毒: %s' % com_env.sanitize())
+    except Exception as exc:
+        step('   环境消毒失败: %s' % (exc,))
+
+    def one_word(fn, name):
+        """每个变体都开一个干净的 Word，避免上一次失败污染下一次。"""
+        word = None
+        try:
+            word = win32.DispatchEx('Word.Application')
+            fn(word)
+            step(f'   [{name}] OK')
+            return True
+        except Exception as exc:
+            step(f'   [{name}] 失败: {exc}')
+            return False
+        finally:
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+
+    variants = [
+        ('A 可见后打开', lambda w: (setattr(w, 'Visible', True), w.Documents.Open(src))[1]),
+        ('B 只读+不带确认', lambda w: w.Documents.Open(
+            src, ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False)),
+        ('C Open 带 Visible=False', lambda w: w.Documents.Open(src, Visible=False)),
+        ('D 关掉告警再开', lambda w: (setattr(w, 'DisplayAlerts', 0),
+                                     w.Documents.Open(src))[1]),
+    ]
+    results = [(name, one_word(fn, name)) for name, fn in variants]
+    step('4 结果: ' + str(results))
+    return 0 if any(ok for _, ok in results) else 1
+    return 0 if any(ok for _, ok in results) else 1
+
+
+def gui_run(notes, report, tb, archive_root, result_path):
+    """按界面的真实路径跑一遍：建界面 → 填路径 → 点"开始勾稽" → 抽送事件循环。
+
+    和用户实际点击完全同一条链路（工作线程 + Tk 消息泵），用来验证打包版。
+    """
+    import time
+
+    class SilentBox:
+        def showinfo(self, *a, **k):
+            pass
+
+        def showerror(self, *a, **k):
+            pass
+
+        def showwarning(self, *a, **k):
+            pass
+
+        def askyesno(self, *a, **k):
+            return False
+
+    globals()['messagebox'] = SilentBox()
+
+    app = AuditCheckApp()
+    app.var_notes.set(notes)
+    app.var_report.set(report)
+    app.var_tb.set(tb)
+    app.var_archive.set(archive_root)
+    app.var_project.set('')
+
+    state = {'ok': False, 'timeout': False}
+    started = [time.time()]
+
+    def finish():
+        try:
+            text = app.txt_log.get('1.0', 'end')
+        except Exception:
+            text = ''
+        state['ok'] = '[完成]' in text
+        try:
+            with open(result_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except Exception:
+            pass
+        try:
+            app.quit()
+        except Exception:
+            pass
+
+    def poll():
+        if str(app.btn_run['state']) != 'disabled':
+            finish()
+            return
+        if time.time() - started[0] > 300:
+            state['timeout'] = True
+            finish()
+            return
+        app.after(300, poll)
+
+    def kick():
+        app.on_run()
+        app.after(400, poll)
+
+    app.after(300, kick)
+    app.mainloop()
+    try:
+        app.destroy()
+    except Exception:
+        pass
+    return 0 if state['ok'] else 1
+
+
 def main():
     if '--selftest' in sys.argv:
         idx = sys.argv.index('--selftest')
         out = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else 'selftest.txt'
         raise SystemExit(selftest(out))
+    if '--comprobe' in sys.argv:
+        idx = sys.argv.index('--comprobe')
+        args = sys.argv[idx + 1:idx + 3]
+        if len(args) < 2:
+            raise SystemExit(2)
+        raise SystemExit(com_probe(*args))
+    if '--guitest' in sys.argv:
+        idx = sys.argv.index('--guitest')
+        args = sys.argv[idx + 1:idx + 6]
+        if len(args) < 5:
+            raise SystemExit(2)
+        raise SystemExit(gui_run(*args))
+    if '--run' in sys.argv:
+        idx = sys.argv.index('--run')
+        args = sys.argv[idx + 1:idx + 6]
+        if len(args) < 5:
+            print('用法：--run <附注> <报表> <TB> <输出目录> <日志文件>')
+            raise SystemExit(2)
+        raise SystemExit(headless_run(*args))
     AuditCheckApp().mainloop()
 
 

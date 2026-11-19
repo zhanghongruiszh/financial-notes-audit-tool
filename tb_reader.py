@@ -50,19 +50,26 @@ def ensure_xlsx(path, work_dir=None):
         return dst
 
     import win32com.client as win32
-    xl = win32.DispatchEx('Excel.Application')
-    xl.Visible = False
-    xl.DisplayAlerts = False
-    try:
-        wb = xl.Workbooks.Open(path, ReadOnly=True)
-        wb.SaveAs(os.path.abspath(dst), FileFormat=51)   # xlOpenXMLWorkbook
-        wb.Close(False)
-    finally:
+    import com_env
+    import docx_ir
+
+    def _convert():
+        with com_env.sanitized():
+            xl = win32.DispatchEx('Excel.Application')
         try:
-            xl.Quit()
-        except Exception:
-            pass
-    return dst
+            xl.Visible = False
+            xl.DisplayAlerts = False
+            wb = xl.Workbooks.Open(os.path.abspath(path), ReadOnly=True)
+            wb.SaveAs(os.path.abspath(dst), FileFormat=51)   # xlOpenXMLWorkbook
+            wb.Close(False)
+        finally:
+            try:
+                xl.Quit()
+            except Exception:
+                pass
+        return dst
+
+    return docx_ir._run_com_with_timeout(_convert, 120, 'Excel 转换 TB')
 
 
 _CN_DIGIT = {'1': '一', '2': '二', '3': '三', '4': '四', '5': '五',
