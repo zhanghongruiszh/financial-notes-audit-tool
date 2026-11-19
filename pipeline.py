@@ -127,10 +127,29 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     model = notes_parser.parse_notes(notes_use, work_dir=os.path.join(out_dir, '_tmp'))
     log(f'      章 {len(model.chapters)} 个，子项目 {len(model.sub_items)} 个')
 
-    # 2) 表格语义
+    # 2) 表格语义（有模板时用模板给识别兜底）
     log('[2/5] 识别表格结构 ...')
-    tables = ts.analyze_document(model)
-    log(f'      表 {len(tables)} 张')
+    hint = None
+    try:
+        import template_lib
+        library = template_lib.load_library()
+        if library:
+            match, score = template_lib.best_match(model, library)
+            if match:
+                sk, sk_ch = match
+                log(f'      模板库匹配：{sk.get("name")}（结构相似度 {score:.0%}）')
+                hint = (lambda ch, sub, seq, n:
+                        template_lib.roles_hint(match, model, ch, sub, seq, n))
+            else:
+                log(f'      模板库 {len(library)} 份，未匹配到相近结构，按自主识别')
+    except Exception as exc:
+        log(f'      模板库不可用（{exc}），按自主识别')
+
+    tpl_stats = {}
+    tables = ts.analyze_document(model, hint=hint, stats=tpl_stats)
+    log(f'      表 {len(tables)} 张'
+        + (f'，模板补全列角色 {tpl_stats.get("template_roles", 0)} 处'
+           if tpl_stats.get('template_roles') else ''))
 
     # 3) 附注内部勾稽
     log('[3/5] 生成并计算附注内部勾稽 ...')

@@ -484,15 +484,47 @@ def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
     )
 
 
-def analyze_document(doc_model):
-    """对整份附注的所有表做语义解析。"""
+def analyze_document(doc_model, hint=None, stats=None):
+    """对整份附注的所有表做语义解析。
+
+    hint: 可选的"模板提示"回调
+          hint(章名, 子项目名, 该子项目下第几张表, 数据列数) -> [角色或 None, ...]
+          只在自主识别没判出角色时用来兜底——模板只是加速，不是必需。
+    stats: 可选 dict，用于统计模板补了多少列。
+    """
     out = []
     for ch in doc_model.chapters:
         ctx = build_chapter_context(doc_model, ch)
         for sub in ch.sub_items:
-            for t in sub.tables:
-                out.append(analyze_table(t, ctx, ch.name, sub.name))
+            for n, t in enumerate(sub.tables, 1):
+                tm = analyze_table(t, ctx, ch.name, sub.name)
+                if hint is not None:
+                    _apply_template_hint(tm, hint, ch.name, sub.name, n, stats)
+                out.append(tm)
     return out
+
+
+def _apply_template_hint(tm, hint, chapter_name, sub_name, table_seq, stats=None):
+    """用模板骨架给没判出角色的列补角色。只补空缺，不覆盖已有判断。"""
+    data_cols = [c for c in tm.columns if c.is_data]
+    if not data_cols:
+        return
+    try:
+        roles = hint(chapter_name, sub_name, table_seq, len(data_cols))
+    except Exception:
+        return
+    if not roles:
+        return
+    for col, role in zip(data_cols, roles):
+        if not role or col.role:
+            continue
+        col.role = role
+        if role in RATIO_ROLES:
+            col.kind = 'ratio'
+        elif col.kind == 'text':
+            col.kind = 'amount'
+        if stats is not None:
+            stats['template_roles'] = stats.get('template_roles', 0) + 1
 
 
 # ---------------------------------------------------------------- CLI

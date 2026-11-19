@@ -49,6 +49,13 @@ class AuditCheckApp(tk.Tk):
         except tk.TclError:
             pass
 
+        # 首次运行把内置模板骨架放到程序目录，之后以磁盘上的为准（可自行替换）
+        try:
+            import template_lib
+            template_lib.seed_if_empty()
+        except Exception:
+            pass
+
         self.create_widgets()
 
     def center_window(self):
@@ -126,6 +133,10 @@ class AuditCheckApp(tk.Tk):
         tk.Button(btn_frame, text='报表附注号一键修复与补全', font=('微软雅黑', 9),
                   bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
                   command=self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(btn_frame, text='模板库', font=('微软雅黑', 9),
+                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
+                  command=self.on_manage_templates).pack(side=tk.LEFT, padx=(0, 10))
 
         tk.Button(btn_frame, text='打开输出文件夹', font=('微软雅黑', 9),
                   bg='#F2F2F2', fg='#333333', cursor='hand2', padx=10, pady=6,
@@ -248,6 +259,116 @@ class AuditCheckApp(tk.Tk):
                 self.btn_run.config(state=tk.NORMAL, text='开始自动化全面勾稽')
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ 模板库
+
+    def on_manage_templates(self):
+        """模板管理：查看 / 导入 / 删除 / 从 Word 重建骨架。"""
+        import template_lib
+
+        win = tk.Toplevel(self)
+        win.title('模板库管理')
+        win.geometry('760x430')
+        win.transient(self)
+
+        top = ttk.Frame(win, padding='10 8 10 4')
+        top.pack(fill=tk.X)
+        ttk.Label(top, text='模板只用于"加速识别"：有相近模板时补全列角色判断，'
+                            '没有模板也能正常勾稽。',
+                  foreground='#666666').pack(anchor=tk.W)
+        ttk.Label(top, text=f'模板库目录：{template_lib.library_dir()}',
+                  foreground='#1F497D').pack(anchor=tk.W, pady=(4, 0))
+
+        frame = ttk.Frame(win, padding='10 4 10 4')
+        frame.pack(fill=tk.BOTH, expand=True)
+        cols = ('name', 'subs', 'tables', 'source')
+        tree = ttk.Treeview(frame, columns=cols, show='headings', height=12)
+        for key, text, width in (('name', '模板名称', 230), ('subs', '子项目', 70),
+                                 ('tables', '表格数', 70), ('source', '来源文件', 300)):
+            tree.heading(key, text=text)
+            tree.column(key, width=width, anchor=tk.W)
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        def refresh():
+            tree.delete(*tree.get_children())
+            for sk in template_lib.load_library():
+                subs = sum(len(c.get('sub_items', [])) for c in sk.get('chapters', []))
+                tabs = sum(len(i.get('tables', []))
+                           for c in sk.get('chapters', []) for i in c.get('sub_items', []))
+                tree.insert('', 'end', values=(sk.get('name', ''),
+                                               subs, tabs, sk.get('source', '')),
+                            tags=(sk.get('_file', ''),))
+
+        def selected_file():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo('提示', '请先选中一个模板。', parent=win)
+                return None
+            return tree.item(sel[0], 'tags')[0]
+
+        def do_import():
+            path = filedialog.askopenfilename(
+                title='选择要导入的模板（Word 附注模板）',
+                filetypes=[('Word 模板', '*.doc *.docx'), ('所有文件', '*.*')])
+            if not path:
+                return
+
+            def work():
+                try:
+                    self.log(f'\n[模板] 正在提取骨架：{os.path.basename(path)} ...')
+                    sk = template_lib.build_skeleton(path, work_dir=WORK_DIR)
+                    saved = template_lib.save_skeleton(sk)
+                    self.log(f'[模板] 已加入：{os.path.basename(saved)}')
+                    win.after(0, refresh)
+                    win.after(0, lambda: messagebox.showinfo(
+                        '完成', f'模板已导入：\n{os.path.basename(saved)}', parent=win))
+                except Exception as exc:
+                    self.log('[模板] 导入失败：' + str(exc))
+                    win.after(0, lambda: messagebox.showerror('导入失败', str(exc), parent=win))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def do_rebuild():
+            def work():
+                try:
+                    self.log('\n[模板] 从模板库目录里的 Word 文件重建骨架 ...')
+                    done = template_lib.rebuild_from_docs(work_dir=WORK_DIR, log=self.log)
+                    win.after(0, refresh)
+                    msg = (f'已重建 {len(done)} 个模板骨架。' if done
+                           else '模板库目录里没有 .doc/.docx 文件。')
+                    win.after(0, lambda: messagebox.showinfo('重建完成', msg, parent=win))
+                except Exception as exc:
+                    self.log('[模板] 重建失败：' + str(exc))
+                    win.after(0, lambda: messagebox.showerror('重建失败', str(exc), parent=win))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def do_delete():
+            name = selected_file()
+            if not name:
+                return
+            if not messagebox.askyesno('确认', f'删除模板「{name}」？', parent=win):
+                return
+            try:
+                os.remove(os.path.join(template_lib.library_dir(), name))
+                self.log(f'[模板] 已删除 {name}')
+                refresh()
+            except Exception as exc:
+                messagebox.showerror('删除失败', str(exc), parent=win)
+
+        def do_open():
+            os.startfile(template_lib.library_dir())
+
+        bottom = ttk.Frame(win, padding='10 4 10 10')
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text='导入模板...', command=do_import).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bottom, text='从 Word 重建骨架',
+                   command=do_rebuild).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bottom, text='删除选中', command=do_delete).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bottom, text='打开模板库文件夹', command=do_open).pack(side=tk.LEFT)
+        ttk.Button(bottom, text='关闭', command=win.destroy).pack(side=tk.RIGHT)
+
+        refresh()
 
     # ------------------------------------------------------------ 报表附注号
 
@@ -391,6 +512,7 @@ def selftest(out_path):
         import table_semantics               # noqa: F401
         import tb_checks                     # noqa: F401
         import tb_reader                     # noqa: F401
+        import template_lib                  # noqa: F401
         import word_to_excel_extractor       # noqa: F401
         import writer                        # noqa: F401
         lines.append('业务模块导入 OK')

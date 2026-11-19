@@ -29,6 +29,17 @@ import report_reader as rr
 
 NOTE_HEADER_WORDS = ('附注', '附注号', '附注编号', '注释')
 
+# 报表项目 → 附注子项目 的别名。
+# 现金流量表的这几个合计数在报表里是独立行，但附注里并没有单独的小节，
+# 它们对应的是「现金流量表补充资料」这一节，所以编号要挂到那一节上。
+# （补充资料里的中间计算项只在 TB 里，由 TB 核对覆盖）
+REPORT_ITEM_ALIAS = {
+    '经营活动产生的现金流量净额': '现金流量表补充资料',
+    '现金及现金等价物净增加额': '现金流量表补充资料',
+    '期末现金及现金等价物余额': '现金流量表补充资料',
+    '期初现金及现金等价物余额': '现金流量表补充资料',
+}
+
 
 def _chapter_prefix(chapter):
     """章号前缀，如「六、」。"""
@@ -82,6 +93,12 @@ def _match_number(items, item_name):
     stripped = rr.normalize_name(_strip_brackets(item_name))
     if stripped and stripped in items:
         return items[stripped]
+    # 别名：现金流量表的合计数挂到「现金流量表补充资料」那一节
+    for alias_key, target in REPORT_ITEM_ALIAS.items():
+        if key == alias_key or (stripped and stripped == alias_key):
+            target_key = rr.normalize_name(target)
+            if target_key in items:
+                return items[target_key]
     return None
 
 

@@ -93,6 +93,34 @@ def _note_name_set(model, scope):
     return names
 
 
+def _sub_item_rows(ws, rows, item_col):
+    """找出属于「其中：」块的行（子项）。
+
+    报表里子项有两种写法，都要排除——它们不是报表项目，只是上一行的拆分，
+    附注里在上级项目下披露即可，不需要单独小节：
+        · 本行以「其中：」开头
+        · 本行缩进比上面那个「其中：」更深（续行，如「利息收入」「应付股利」）
+    """
+    sub = set()
+    base_indent = None
+    for r in sorted(rows):
+        raw = str(ws.cell(r, item_col).value or '')
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if stripped.startswith('其中'):
+            base_indent = indent
+            sub.add(r)
+            continue
+        if base_indent is not None:
+            if indent > base_indent:
+                sub.add(r)        # 「其中：」块里的续行
+            else:
+                base_indent = None
+    return sub
+
+
 def build_disclosure_checks(report_path, book, model):
     """返回有金额、但附注里找不到对应小节的报表科目清单。"""
     wb = openpyxl.load_workbook(report_path, data_only=True)
@@ -108,10 +136,20 @@ def build_disclosure_checks(report_path, book, model):
             continue
         ws = wb[sheet.name]
 
+        # 该表的「其中：」子项行，不参与"未披露"判断
+        col_rows = {}
+        for key, (row, item_col) in sheet.items.items():
+            col_rows.setdefault(item_col, []).append(row)
+        skip_rows = set()
+        for item_col, rows in col_rows.items():
+            skip_rows |= _sub_item_rows(ws, rows, item_col)
+
         seen = set()
         for key, (row, item_col) in sheet.items.items():
             if not key or key in seen:
                 continue
+            if row in skip_rows:
+                continue          # 「其中：」子项，附注里在上级项目下披露即可
             if any(w in key for w in SKIP_WORDS):
                 continue
             key_nb = rr.normalize_name(rn._strip_brackets(key))
