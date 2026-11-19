@@ -752,6 +752,11 @@ def _rule_sum_down(tm, checks):
     subs = [r for r in rows if r.row > first_total.row
             and r.kind in ('subtotal', 'total')]
     if not subs:
+        # 合计在上、下面直接是明细（没有小计）：合计 = 全部明细之和
+        subs = [r for r in rows if r.row > first_total.row
+                and r.kind == 'detail'
+                and not (r.label or '').startswith(('其中', '减：', '减:', '加：', '--'))]
+    if not subs:
         return
 
     for c in _data_columns(tm):
@@ -759,7 +764,7 @@ def _rule_sum_down(tm, checks):
         checks.append(CheckItem(
             rule_id='R-SUMD', level='hard',
             chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
-            label=f'合计 = 下方 {len(subs)} 个小计之和（{c.header_text or "列"}）',
+            label=f'合计 = 下方 {len(subs)} 行之和（{c.header_text or "列"}）',
             target_row=first_total.row, target_col=c.index + 1,
             terms=terms,
         ))

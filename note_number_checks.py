@@ -41,6 +41,8 @@ class NoteNoCheck:
     expected: str
     chapter_num: object = None
     item_num: object = None
+    actual_chapter: object = None
+    actual_number: object = None
     status: str = 'unmatched'      # pass / fail / unmatched
     note: str = ''
 
@@ -150,13 +152,51 @@ def build_note_no_checks(report_path, model):
                     out.append(chk)
                     continue
 
+                chk.actual_chapter, chk.actual_number = ach, aitem
+
                 if ach == chapter.number and aitem == number:
                     chk.status = 'pass'
+                elif aitem == number:
+                    # 项目号对得上、只有章号不同：先记下来，最后统一判断是不是整体偏移
+                    chk.status = 'chapter_diff'
+                    chk.note = f'章号不同（报表 {ach}，附注 {chapter.number}）'
                 else:
                     chk.status = 'fail'
-                    chk.note = f'章号或项目号不符（报表 {ach}-{aitem}，附注 {chapter.number}-{number}）'
+                    chk.note = (f'项目号不符（报表 {ach}-{aitem}，'
+                                f'附注 {chapter.number}-{number}）')
                 out.append(chk)
+
+    _mark_chapter_offset(out)
     return out
+
+
+def _mark_chapter_offset(checks):
+    """识别"章号整体偏移"：附注文档的章编号起始值写错时，会出现全部差同一号。
+
+    这种情况不是 44 个错误，而是附注那份 Word 的编号起始值有问题——
+    统一标成待确认并说明，不逐条报错。
+    """
+    diff_items = [c for c in checks if c.status == 'chapter_diff']
+    if not diff_items:
+        return
+    from collections import Counter
+    deltas = Counter(int(c.chapter_num) - int(c.actual_chapter)
+                     for c in diff_items
+                     if c.chapter_num is not None and c.actual_chapter is not None)
+    if not deltas:
+        return
+    delta, count = deltas.most_common(1)[0]
+    if count < max(3, len(checks) * 0.5):
+        for c in diff_items:
+            c.status = 'fail'
+            c.note = c.note + '，请核对'
+        return
+    for c in diff_items:
+        c.status = 'warn'
+        c.note = (f'附注章号整体偏移 {delta:+d}（报表写 {c.actual_chapter}、'
+                  f'附注显示 {c.chapter_num}）。项目号一致，'
+                  f'疑似附注 Word 的章编号起始值有误（如"税项"那章重号导致）')
+    return
 
 
 def summarize(checks):
