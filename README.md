@@ -48,6 +48,31 @@ python audit_check_app.py
 python pipeline.py <附注.doc> <报表.xlsx> [TB.xls] [归档目录]
 ```
 
+### 运行环境要求（源码方式）
+
+- Windows 64 位，且**已安装 Microsoft Word 与 Excel**——`.doc` 需要 Word 转 `.docx`、
+  `.xls` 需要 Excel 转 `.xlsx`，都走 COM 自动化
+- Python 3.9 及以上
+- 依赖库：
+
+```bash
+pip install openpyxl python-docx pywin32
+```
+
+### 打包成 exe
+
+```bash
+python -m PyInstaller --clean --noconfirm 财务报表附注自动化勾稽系统.spec
+```
+
+打包后可用自检开关验证（不弹界面，把结果写进文件，便于脚本化检查）：
+
+```bash
+dist\财务报表附注自动化勾稽系统.exe --selftest selftest.txt
+```
+
+内容应包含「界面构建成功 / 页脚可见 / 依赖导入 OK / OK」。
+
 ---
 
 ## 勾稽成果表结构
