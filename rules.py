@@ -86,6 +86,9 @@ class CheckItem:
     target_col: int
     terms: List[Term] = field(default_factory=list)   # 分子（或等式右边）
     den: List[Term] = field(default_factory=list)     # 分母；为空表示纯加减
+    alts: List[List['Term']] = None                   # 备选口径（任一成立即算平）
+    alt_den: List['Term'] = None                      # 比例类备选分母
+    soft_fail: bool = False                           # 备选也不成立时，标存疑而不是差异
     is_ratio: bool = False                            # 结果按百分比显示
     period: Optional[datetime.date] = None
     period_key: Optional[str] = None
@@ -186,14 +189,40 @@ def evaluate(item, table_model, tables_by_idx=None):
     if actual is None:
         return CheckResult(item, expected, None, None, 'skip', '目标格不是数字')
     diff = actual - expected
+
+    # 口径不唯一时（重分类方向、前五名分母选哪张表），先试备选口径
+    if item.alt_den and item.is_ratio and abs(diff) * 100 > RATIO_TOLERANCE_PP:
+        try:
+            alt_d = sum(t.coef * (_val(t) or 0.0) for t in item.alt_den)
+            if abs(alt_d) > 1e-9:
+                alt_exp = total / alt_d
+                if abs(actual - alt_exp) * 100 <= RATIO_TOLERANCE_PP:
+                    return CheckResult(item, alt_exp, actual, actual - alt_exp, 'pass')
+        except Exception:
+            pass
+
+    if item.alts and abs(diff) > TOLERANCE:
+        for alt in item.alts:
+            try:
+                alt_exp = sum(t.coef * (_val(t) or 0.0) for t in alt)
+            except Exception:
+                continue
+            if item.den:
+                continue
+            if abs(actual - alt_exp) <= TOLERANCE:
+                return CheckResult(item, alt_exp, actual, actual - alt_exp, 'pass')
     if item.is_ratio:
         # 比例按"百分点"比较：0.01 个百分点以内算平
         status = 'pass' if abs(diff) * 100 <= RATIO_TOLERANCE_PP else 'fail'
         # 比例类一律按"软提示"处理
         if item.level == 'hard':
             item.level = 'soft'
+    elif abs(diff) <= TOLERANCE:
+        status = 'pass'
+    elif item.soft_fail:
+        status = 'unclear'
     else:
-        status = 'pass' if abs(diff) <= TOLERANCE else 'fail'
+        status = 'fail'
     return CheckResult(item, expected, actual, diff, status)
 
 
@@ -649,25 +678,36 @@ def _rule_move(tm, checks):
             end_col = next((c for c in cols if c.index == dec.index + 1), None)
         if beg_col and end_col and end_col is not dec_cols[0] and end_col is not inc_cols[0]:
             # 增加/减少之外的其他变动列（重分类、其他）也算进等式
+            # 增加类：全部计入；减少类：全部计入（含"摊销/折旧"这种减少项）；
+            # 中间的"重分类/其他"不动——它方向不定，算进去反而错。
             extras = [c for c in cols
                       if dec.index < c.index < end_col.index
                       and c.role not in ('增加', '减少', '余额', '价值', '准备', '比例')]
+            plus_inc = [c for c in cols if c.role == '增加']
+            minus_dec = [c for c in cols if c.role in ('减少', '折旧')]
             for r in tm.rows:
                 if r.kind not in ('detail', 'total', 'subtotal') or not r.label:
                     continue
                 # 账面价值这类是倒算出来的，不服从"期初+增加−减少"
                 if any(k in (r.label or '') for k in ('账面价值', '净值', '净额')):
                     continue
-                terms = [Term(+1, r.row, beg_col.index + 1),
-                         Term(+1, r.row, inc.index + 1),
-                         Term(-1, r.row, dec.index + 1)]
-                terms += [Term(+1, r.row, c.index + 1) for c in extras]
+                terms = [Term(+1, r.row, beg_col.index + 1)]
+                terms += [Term(+1, r.row, c.index + 1) for c in plus_inc]
+                terms += [Term(-1, r.row, c.index + 1) for c in minus_dec]
+                has_extra = any((cell_number(tm.ref.grid, r.row, c.index + 1) or 0)
+                                for c in extras)
                 checks.append(CheckItem(
                     rule_id='R-MOVE', level='hard',
                     chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
                     label=f'期末 = 期初 + 本期增加 − 本期减少（{r.label}）',
                     target_row=r.row, target_col=end_col.index + 1,
                     terms=terms,
+                    alts=[[Term(+1, r.row, beg_col.index + 1)]
+                          + [Term(+1, r.row, c.index + 1) for c in plus_inc]
+                          + [Term(-1, r.row, c.index + 1) for c in minus_dec]
+                          + [Term(+1, r.row, c.index + 1) for c in extras]]
+                    if extras else None,
+                    soft_fail=bool(has_extra),
                 ))
 
     # ---------- 行式 ----------
@@ -771,7 +811,10 @@ def _rule_pct(tm, checks, siblings=None):
     total_rows = [r for r in tm.rows if r.kind == 'total']
     tot = total_rows[-1] if total_rows else None
     targets = [r for r in tm.rows if r.kind in ('detail', 'subtotal') and r.label]
-    is_top5 = getattr(tm, 'table_type', '') == 'TOP5'
+    company_rows = sum(1 for r in tm.rows
+                       if r.label and any(w in r.label for w in ('有限公司', '股份', '集团')))
+    is_top5 = (getattr(tm, 'table_type', '') == 'TOP5'
+               or company_rows >= 3)
 
     for rc in ratio_cols:
         period = rc.period
@@ -815,6 +858,8 @@ def _rule_pct(tm, checks, siblings=None):
                     terms=[Term(+1, r.row, base.index + 1)],
                     den=[Term(+1, other_tot.row, other_col.index + 1,
                               table_idx=other.ref.idx)],
+                    alt_den=[Term(+1, tot.row, base.index + 1)] if tot else None,
+                    soft_fail=True,
                     is_ratio=True, period=period, period_key=rc.period_key,
                 ))
             continue
