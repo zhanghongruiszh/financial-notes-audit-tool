@@ -209,11 +209,11 @@ def _data_columns(tm, include_ratio=False):
 
 
 def _consume_children(tm, block, start, target_value, ref_col, tolerance=TOLERANCE):
-    """从 block[start] 起，吃掉属于上层的子项行，返回消耗到的位置。
+    """从 block[start] 起，试着吃掉属于上层的子项行。
 
-    判定依据：子项金额累加到与目标值相等时，这一块结束。
-    这是"先用一列认出结构，再逐列独立校验"——结构识别和结果校验分开，
-    不会因为挑行而让错误消失。
+    返回 (结束位置, 是否**正好**累加到目标值)。
+    只有"正好对上"才算真的子项——否则像「其中：开发成本」这种
+    本身就是上一行全额重述的行，会把后面互不相干的行（库存商品…）全吞掉。
     """
     grid = tm.ref.grid
     rows = {r.row: r for r in tm.rows}
@@ -227,8 +227,10 @@ def _consume_children(tm, block, start, target_value, ref_col, tolerance=TOLERAN
         acc += abs(v or 0.0)
         i += 1
         if target_value is not None and abs(acc - abs(target_value)) <= tolerance:
-            break
-    return i
+            return i, True
+        if target_value is not None and acc > abs(target_value) + tolerance:
+            break          # 再加就超了，说明这些不是它的子项
+    return i, False
 
 
 # 这些行是"计算基础"/说明行，不参与上方加总
@@ -265,9 +267,17 @@ def _contribution_rows(tm, total_row, ref_col):
         info = rows.get(r)
         if info is None:
             break
-        if info.kind in ('blank', 'section', 'header', 'title', 'total'):
+        if info.kind in ('blank', 'section', 'header', 'title'):
             break
         if (info.label or '').strip() in STOP_LABELS:
+            break
+        if info.kind == 'total':
+            # 上方遇到「小计」：
+            #   · 目标是「合计」→ 它是组成项（合计 = 小计 − 减值准备），收进来
+            #   · 目标是「小计」→ 上面的合计是更高层级，不属于它，停
+            target_label = (rows.get(total_row).label or '') if rows.get(total_row) else ''
+            if '合计' in target_label or '总计' in target_label:
+                block.append(r)
             break
         block.append(r)
         r -= 1
@@ -279,17 +289,20 @@ def _contribution_rows(tm, total_row, ref_col):
         row = block[i]
         info = rows[row]
 
-        if info.kind == 'subtotal':
+        if info.kind in ('total', 'subtotal'):
             picked.append(row)
+            if info.kind == 'total':
+                i += 1          # 小计不再向下展开（下面已由它代表）
+                continue
             val = cell_number(tm.ref.grid, row, ref_col)
-            nxt = _consume_children(tm, block, i + 1, val, ref_col)
-            i = nxt if nxt > i else i + 1
+            nxt, matched = _consume_children(tm, block, i + 1, val, ref_col)
+            i = nxt if (matched and nxt > i) else i + 1
             continue
 
         if info.kind == 'group':
             parent_val = cell_number(tm.ref.grid, picked[-1], ref_col) if picked else None
-            nxt = _consume_children(tm, block, i + 1, parent_val, ref_col)
-            i = nxt if nxt > i else i + 1
+            nxt, matched = _consume_children(tm, block, i + 1, parent_val, ref_col)
+            i = nxt if (matched and nxt > i) else i + 1
             continue
 
         if info.kind == 'detail':
@@ -508,28 +521,49 @@ def _rule_move(tm, checks):
     # 但仍要参与 期末 = 期初 + 增加 − 减少 的校验。
     cols = [c for c in tm.columns if c.is_data]
 
+    # 四块式变动表（固定资产/无形资产）由 R-BLK 负责，列式规则不适用
+    if _find_blocks(tm):
+        return
+
     # ---------- 列式 ----------
     inc_cols = [c for c in cols if c.role == '增加']
     dec_cols = [c for c in cols if c.role == '减少']
     if inc_cols and dec_cols:
-        inc, dec = inc_cols[0].index, dec_cols[0].index
-        beg_col = next((c for c in cols if c.index == inc - 1), None)
-        end_col = next((c for c in cols if c.index == dec + 1), None)
-        if beg_col and end_col and end_col.role != '增加' and end_col.role != '减少':
+        inc, dec = inc_cols[0], dec_cols[0]
+
+        def head_of(c):
+            return c.header_text or ''
+
+        # 期初/期末按表头认，不能靠位置——中间可能夹着「本年重分类」这类列
+        beg_col = next((c for c in cols if c.role == '余额'
+                        and any(k in head_of(c) for k in ('期初', '年初'))), None)
+        end_col = next((c for c in cols if c.role == '余额'
+                        and any(k in head_of(c) for k in ('期末', '年末'))), None)
+        if beg_col is None:
+            beg_col = next((c for c in cols if c.index == inc.index - 1), None)
+        if end_col is None:
+            end_col = next((c for c in cols if c.index == dec.index + 1), None)
+        if beg_col and end_col and end_col is not dec_cols[0] and end_col is not inc_cols[0]:
+            # 增加/减少之外的其他变动列（重分类、其他）也算进等式
+            extras = [c for c in cols
+                      if dec.index < c.index < end_col.index
+                      and c.role not in ('增加', '减少', '余额', '价值', '准备', '比例')]
             for r in tm.rows:
-                if r.kind not in ('detail', 'total') or not r.label:
+                if r.kind not in ('detail', 'total', 'subtotal') or not r.label:
                     continue
                 # 账面价值这类是倒算出来的，不服从"期初+增加−减少"
                 if any(k in (r.label or '') for k in ('账面价值', '净值', '净额')):
                     continue
+                terms = [Term(+1, r.row, beg_col.index + 1),
+                         Term(+1, r.row, inc.index + 1),
+                         Term(-1, r.row, dec.index + 1)]
+                terms += [Term(+1, r.row, c.index + 1) for c in extras]
                 checks.append(CheckItem(
                     rule_id='R-MOVE', level='hard',
                     chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
                     label=f'期末 = 期初 + 本期增加 − 本期减少（{r.label}）',
                     target_row=r.row, target_col=end_col.index + 1,
-                    terms=[Term(+1, r.row, beg_col.index + 1),
-                           Term(+1, r.row, inc_cols[0].index + 1),
-                           Term(-1, r.row, dec_cols[0].index + 1)],
+                    terms=terms,
                 ))
 
     # ---------- 行式 ----------
@@ -598,16 +632,17 @@ def _rule_pct(tm, checks, siblings=None):
         return None
 
     def base_table(period):
-        """同子项目里能找到"该项目总额"的表：有合计行、有金额列。
+        """同子项目里找"该项目总额"：有合计行、有金额列。
 
-        只认出现在本表**之前**的表——成果表是按文档顺序写的，
-        后面的表此刻还没定行号，没法写跨表公式。
-        前五名表通常表头不写期间，这时取主表**最近一期**的合计。
+        只认排在本表**之前**的表——成果表按文档顺序写，后面的表还没定行号。
+        候选可能不止一张（分类表、账龄表、三阶段表…），取**合计最大**的那张：
+        小口径的附表（某类资产的账龄）合计会偏小，拿它当分母会把占比算大。
         """
+        best = None
         for other in (siblings or []):
             if other is tm or other.ref.idx >= tm.ref.idx:
                 continue
-            tot = next((r for r in other.rows if r.kind == 'total'), None)
+            tot = next((r for r in other.rows if r.kind in ('total', 'subtotal')), None)
             if tot is None:
                 continue
             cols = [c for c in other.columns
@@ -622,8 +657,12 @@ def _rule_pct(tm, checks, siblings=None):
                 col = next((c for c in dated if c.period == latest), None)
             if col is None:
                 continue
-            return other, tot, col
-        return None
+            val = cell_number(other.ref.grid, tot.row, col.index + 1)
+            if val is None:
+                continue
+            if best is None or abs(val) > abs(best[3]):
+                best = (other, tot, col, val)
+        return best[:3] if best else None
 
     total_rows = [r for r in tm.rows if r.kind == 'total']
     tot = total_rows[-1] if total_rows else None
@@ -691,6 +730,39 @@ def _rule_pct(tm, checks, siblings=None):
 
 
 # ---------------------------------------------------------------- 入口
+
+def _rule_sum_down(tm, checks):
+    """合计在**上方**、明细/小计在下方：合计 = 各小计之和。
+
+    长期股权投资那种表就是：第一行「合计」，下面分「子公司…小计」「联营企业…小计」。
+    """
+    rows = [r for r in tm.rows if r.row]
+    if not rows:
+        return
+    first_total = next((r for r in rows if r.kind == 'total'), None)
+    if first_total is None:
+        return
+    # 只处理"合计出现在表头附近、上面没有别的合计"的版式
+    above = [r for r in rows if r.row < first_total.row
+             and r.kind in ('detail', 'group', 'subtotal', 'total')]
+    if above:
+        return
+
+    subs = [r for r in rows if r.row > first_total.row
+            and r.kind in ('subtotal', 'total')]
+    if not subs:
+        return
+
+    for c in _data_columns(tm):
+        terms = [Term(+1, r.row, c.index + 1) for r in subs]
+        checks.append(CheckItem(
+            rule_id='R-SUMD', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label=f'合计 = 下方 {len(subs)} 个小计之和（{c.header_text or "列"}）',
+            target_row=first_total.row, target_col=c.index + 1,
+            terms=terms,
+        ))
+
 
 # ---------------------------------------------------------------- 特殊表结构
 
@@ -950,6 +1022,7 @@ def build_checks(tables):
         _rule_block_move(tm, checks)
         _rule_prov_move(tm, checks)
         _rule_ecl(tm, checks)
+        _rule_sum_down(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
 

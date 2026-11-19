@@ -117,7 +117,10 @@ RE_DATE_RANGE = re.compile(
 RE_YEAR_ONLY = re.compile(r'(\d{4})\s*年度?(?!\d)')
 # 「"期末"指2025年12月31日」
 _PERIOD_WORDS = '年末余额|年末|年初余额|年初|期末余额|期末|期初余额|期初|本期|上期'
+# 注意前面要排掉「上期期末」「上年期末」——否则「上期期末指2024年12月31日」
+# 会把真正的「期末余额指2025年12月31日」挤掉。
 RE_PERIOD_DEF = re.compile(
+    r'(?<!上期)(?<!上年)(?<!上一年)(?<!上一)'
     r'[“"\']?(' + _PERIOD_WORDS + r')[”"\']?\s*'
     r'(?:指|为|是|：|:)\s*'
     r'(\d{4})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})'
@@ -255,7 +258,7 @@ def _filled_row(grid, r):
 
 def build_chapter_context(doc_model, chapter):
     """从章的正文里读出「期末/期初/本期」对应的具体日期。"""
-    ctx = {'period_defs': {}, 'warnings': []}
+    ctx = {'period_defs': {}, 'warnings': [], '_score': {}}
     texts = []
     for sub in chapter.sub_items:
         texts.extend(sub.paragraphs)
@@ -267,14 +270,24 @@ def build_chapter_context(doc_model, chapter):
 
     for t in texts:
         for m in RE_PERIOD_DEF.finditer(t or ''):
-            key = PERIOD_KEYS.get(m.group(1))
+            word = m.group(1)
+            key = PERIOD_KEYS.get(word)
             if not key:
                 continue
             try:
                 d = datetime.date(int(m.group(2)), int(m.group(3)), int(m.group(4)))
             except ValueError:
                 continue
-            ctx['period_defs'].setdefault(key, d)
+            # 「期初余额指2025年1月1日」在会计上就是「2024年12月31日余额」，
+            # 报表列一般写 2024-12-31，归一到上年末才能对上。
+            if key == '期初' and d.month == 1 and d.day == 1:
+                d = datetime.date(d.year - 1, 12, 31)
+            score = 3 if ('余额' in word or '发生额' in word) else 1
+            # 「期末余额」比单独的「期末」更可信，得分高者优先
+            best = ctx['_score'].get(key, 0)
+            if score > best:
+                ctx['period_defs'][key] = d
+                ctx['_score'][key] = score
     if not ctx['period_defs']:
         ctx['warnings'].append('未找到「期末/期初」与具体日期的对照句')
     return ctx
@@ -533,7 +546,8 @@ def _apply_template_hint(tm, hint, chapter_name, sub_name, table_seq, stats=None
     if not data_cols:
         return
     try:
-        roles = hint(chapter_name, sub_name, table_seq, len(data_cols))
+        roles = hint(chapter_name, sub_name, table_seq, len(data_cols),
+                     (tm.ref.rows, tm.ref.cols))
     except Exception:
         return
     if not roles:

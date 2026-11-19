@@ -111,6 +111,20 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     os.makedirs(out_dir, exist_ok=True)
     log(f'[流程] 项目【{project}】第 {version} 版 → {out_dir}')
 
+    # 0) 先把 .doc/.xls 统一转成 .docx/.xlsx
+    #    （docx/xlsx 直接读取，不经过 Office；转换结果放在原文件旁边并复用）
+    try:
+        import convert_inputs
+        converted = convert_inputs.convert_many(
+            [p for p in (notes_path, report_path, tb_path) if p], log=log)
+        mapping = {os.path.abspath(o): n for o, n, m in converted if n}
+        notes_path = mapping.get(os.path.abspath(notes_path), notes_path)
+        report_path = mapping.get(os.path.abspath(report_path), report_path)
+        if tb_path:
+            tb_path = mapping.get(os.path.abspath(tb_path), tb_path)
+    except Exception as exc:
+        log(f'[转换] 跳过格式转换：{exc}')
+
     # 1) 解析附注（若做过编号重排，用重排后的那份）
     notes_use = _preferred_input(notes_path, '_编号已规范.docx')
     report_use = _preferred_input(report_path, '_附注编号已修复.xlsx')

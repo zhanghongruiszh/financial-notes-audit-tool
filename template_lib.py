@@ -219,11 +219,12 @@ def best_match(model, library):
     return best, min(best_score, 1.0)
 
 
-def roles_hint(match, model, chapter_name, sub_name, table_seq, n_cols):
+def roles_hint(match, model, chapter_name, sub_name, table_seq, n_cols, shape=None):
     """给出某张表各列角色的建议（模板里同位置的表）。
 
-    match: best_match() 的第一个返回值 (skeleton, skeleton_chapter)
-    返回长度 n_cols 的列表，元素为角色字符串或 None。
+    shape=(行数, 列数)。只有形状**完全一致**才给提示——否则说明这份文档
+    不是按该模板填的（模板是空白表，行数和实际差别很大），
+    硬套模板的角色会造出假差异。
     """
     if not match:
         return [None] * n_cols
@@ -235,7 +236,11 @@ def roles_hint(match, model, chapter_name, sub_name, table_seq, n_cols):
         idx = table_seq - 1
         if idx < 0 or idx >= len(tables):
             return [None] * n_cols
-        roles = tables[idx].get('roles') or []
+        skel = tables[idx]
+        if shape is not None:
+            if (skel.get('rows'), skel.get('cols')) != (shape[0], shape[1]):
+                return [None] * n_cols
+        roles = skel.get('roles') or []
         if len(roles) != n_cols:
             return [None] * n_cols
         return [r or None for r in roles]

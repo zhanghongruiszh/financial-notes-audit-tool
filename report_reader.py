@@ -19,6 +19,7 @@ report_reader.py — 读三张报表，为"附注 vs 报表"勾稽提供定位�
 
 import datetime
 import re
+from datetime import date
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -177,10 +178,13 @@ HEADER_WORDS = ('项目', '期末', '年末', '本期', '年初', '期初', '上
 
 
 def _find_header_row(ws, max_scan=12):
-    """找表头行：该行至少出现 1 个日期，或出现 2 个以上的表头词。
+    """找表头行：取"表头证据最强"的一行，而不是第一行。
 
-    有些报表表头写「期末余额 / 上年年末余额」而不是具体日期，也要认。
+    报表上方常有标题行/编制单位行，其中可能夹一个日期（如 46022），
+    按"第一行有日期"判断会认错。真正的表头行会同时出现
+    项目/附注/期末余额/期初余额 这类词，得分更高。
     """
+    best, best_score = 0, 0
     for r in range(1, min(max_scan, ws.max_row) + 1):
         dates = words = 0
         for c in range(1, min(ws.max_column, 30) + 1):
@@ -191,9 +195,12 @@ def _find_header_row(ws, max_scan=12):
             text = str(v or '').strip()
             if len(text) <= 12 and any(w in text for w in HEADER_WORDS):
                 words += 1
-        if dates >= 1 or words >= 2:
-            return r
-    return 0
+        if words < 2 and dates < 2:
+            continue
+        score = dates * 2 + words
+        if score > best_score:
+            best, best_score = r, score
+    return best
 
 
 RE_NOTE_REF = re.compile(r'^[一二三四五六七八九十百]+[、.]\s*\d')
@@ -252,6 +259,26 @@ def _read_sheet(ws, name):
         d = parse_period(ws.cell(sheet.header_row, c).value)
         if d:
             sheet.periods[c] = d
+
+    # 表头只写「期末余额 / 期初余额」而没有具体日期时，用标题行里的日期
+    # （如「2025年度」「2025年12月31日」）推出各列期间
+    if not sheet.periods:
+        doc_date = None
+        for r in range(1, sheet.header_row):
+            for c in range(1, max_col + 1):
+                d = parse_period(ws.cell(r, c).value)
+                if d and (doc_date is None or d > doc_date):
+                    doc_date = d
+        if doc_date:
+            prior = date(doc_date.year - 1, 12, 31)
+            for c in range(1, max_col + 1):
+                text = str(ws.cell(sheet.header_row, c).value or '').strip()
+                if not text:
+                    continue
+                if any(k in text for k in RE_PRIOR_HEAD):
+                    sheet.periods[c] = prior
+                elif any(k in text for k in RE_LATEST_HEAD):
+                    sheet.periods[c] = doc_date
 
     item_cols = _item_columns(ws, sheet, max_col)
     _rebuild_blocks(sheet, item_cols)
