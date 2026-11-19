@@ -455,8 +455,23 @@ def _candidate_blocks(tm, total_row, ref_col):
         if last_parent is not None and abs(value(last_parent)) < 0.005:
             with_break.append(row_no)
 
+    # 候选四：把紧跟「其中：」后面的续行当作该组的子项排除掉
+    no_group_children = []
+    after_group = False
+    for row_no in block:
+        info = rows[row_no]
+        label = (info.label or '').strip()
+        is_break = info.kind == 'group' or label.startswith(('其中', '减：', '减:'))
+        if is_break:
+            after_group = True
+            continue
+        if after_group and info.kind == 'detail':
+            continue        # 视为上一组的子项，不计入合计
+        after_group = False
+        no_group_children.append(row_no)
+
     cands = []
-    for cand in (base, with_break, subtotal_first):
+    for cand in (base, no_group_children, with_break, subtotal_first):
         cand = sorted(set(cand))
         if cand and cand not in cands:
             cands.append(cand)
@@ -464,11 +479,12 @@ def _candidate_blocks(tm, total_row, ref_col):
 
 
 def _rule_v_sum(tm, checks):
-    """合计行 = 上方明细之和（语义候选 + 数值验证）。
+    """合计行 = 上方明细之和（语义候选 + 数值验证，逐列判定）。
 
-    光靠语义会把「其中」行算错，光靠数值会被重述行带偏。
-    所以先由语义生成 2~3 个候选行组，再用数值验证挑一个；
-    一个都验不上，就标成「结构存疑」（黄色待确认），不报红差异。
+    行组按"语义"生成几个候选，再用每一列的数值验证挑一个：
+      · 某列能对上 → 用它（该列按"确定"处理）
+      · 这一列一个候选都对不上，但别的列能对上 → 结构存疑（黄色）
+      · 所有列都对不上 → 真的平不了（红色差异）
     """
     grid = tm.ref.grid
     totals = [r for r in tm.rows if r.kind == 'total']
@@ -476,45 +492,66 @@ def _rule_v_sum(tm, checks):
         return
     cols = _data_columns(tm, include_ratio=False)
     rows = {r.row: r for r in tm.rows}
+
     for tot in totals:
         ref_col = _pick_ref_col(tm, tot.row, cols)
-        target = cell_number(grid, tot.row, ref_col)
         cands = _candidate_blocks(tm, tot.row, ref_col)
 
-        # 指纹库里有这个结构的判定 → 直接照用，不再猜
-        fp = getattr(tm, 'fingerprint', None)
-        if fp:
-            saved = (fp.get('sum_groups') or {}).get(str(tot.row))
-            if saved:
-                cands = [list(saved)] + [c for c in cands if c != saved]
-
-        # 首选原来的结构识别结果（历史行为，案例上验证过），
-        # 它不成立时再试语义候选，都不成立才标结构存疑。
         legacy = _contribution_rows(tm, tot.row, ref_col)
         if legacy:
             cands = [legacy] + [c for c in cands if c != legacy]
-
         if not cands:
-            continue        # 连候选都没有，说明这行不是"上方明细汇总"，不必核
+            continue
 
-        picked = None
-        for cand in cands:
-            acc = sum(row_sign(rows[r].label) * (cell_number(grid, r, ref_col) or 0.0) for r in cand)
-            if target is not None and abs(acc - target) <= TOLERANCE:
-                picked = cand
-                break
-        unclear = picked is None
-        if picked is None:
-            picked = cands[0]
+        def acc_of(cand, col):
+            return sum(row_sign(rows[r].label)
+                       * (cell_number(grid, r, col) or 0.0) for r in cand)
 
+        # 逐列找能对上的候选
+        picks = {}
         for c in cols:
-            terms = [Term(row_sign(rows[r].label), r, c.index + 1) for r in picked]
+            target = cell_number(grid, tot.row, c.index + 1)
+            found = None
+            flip = False
+            for cand in cands:
+                if target is None:
+                    continue
+                acc = acc_of(cand, c.index + 1)
+                if abs(acc - target) <= TOLERANCE:
+                    found, flip = cand, False
+                    break
+                # 有些列整体按"减项"呈现，合计是负的
+                if abs(acc + target) <= TOLERANCE:
+                    found, flip = cand, True
+                    break
+            picks[c.index] = (found, flip)
+
+        any_found = any(v[0] for v in picks.values())
+        for c in cols:
+            found, flip = picks[c.index]
+            if found is not None:
+                level = 'hard'
+                picked = found
+            elif any_found or len(cols) > 1:
+                # 别的列能对上、这列对不上；或者多列表里一列都没对上
+                # ——多半是行组没认准，标存疑，别硬判差异
+                level = 'unclear'
+                picked = cands[0]
+                flip = False
+            else:
+                level = 'hard'         # 单列表还平不了 → 真的差异
+                picked = cands[0]
+                flip = False
+
+            coef_dir = -1 if flip else 1
+            terms = [Term(coef_dir * row_sign(rows[r].label), r, c.index + 1)
+                     for r in picked]
             checks.append(CheckItem(
-                rule_id='V-SUM', level='unclear' if unclear else 'hard',
+                rule_id='V-SUM', level=level,
                 chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
                 label=f'合计行 = 上方 {len(picked)} 行之和'
                       f'（{c.header_text or "列" + str(c.index + 1)}）'
-                      + ('　[结构存疑]' if unclear else ''),
+                      + ('　[结构存疑]' if level == 'unclear' else ''),
                 target_row=tot.row, target_col=c.index + 1,
                 terms=terms, period=c.period, period_key=c.period_key,
             ))
@@ -537,9 +574,24 @@ def _rule_v_grp(tm, checks):
         if not children:
             continue
         for c in cols:
+            # 父行这一列写的是「——」/「—」这类占位符时，说明该列不是加总关系；
+            # 但**空白**不能跳——空着的父行照样要核对子项
+            try:
+                cell = tm.ref.grid[parent_row - 1][c.index]
+                raw_text = str(cell.get('t') or '').strip()
+            except Exception:
+                raw_text = ''
+            if raw_text in ('——', '—', '--', '-', '–', '/'):
+                continue
+            child_sum = sum(row_sign(rows[r].label)
+                            * (cell_number(tm.ref.grid, r, c.index + 1) or 0.0)
+                            for r in children)
+            parent_val = cell_number(tm.ref.grid, parent_row, c.index + 1) or 0.0
+            # 子项在这一列全空、父行却有数：说明这一列的子项在别处，结构认不准
+            level = 'unclear' if (not child_sum and parent_val) else 'hard'
             terms = [Term(row_sign(rows[r].label), r, c.index + 1) for r in children]
             checks.append(CheckItem(
-                rule_id='V-GRP', level='hard',
+                rule_id='V-GRP', level=level,
                 chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
                 label=f'「{parent.label}」= 其下 {len(children)} 个明细之和',
                 target_row=parent_row, target_col=c.index + 1,
@@ -689,11 +741,24 @@ def _rule_move(tm, checks):
                       and c.role not in ('增加', '减少', '余额', '价值', '准备', '比例')]
             plus_inc = [c for c in cols if c.role == '增加']
             minus_dec = [c for c in cols if c.role in ('减少', '折旧')]
+            # 净值/账面价值块里的行是倒算出来的，不服从"期初+增加−减少"
+            value_block_rows = set()
+            cur_is_value = False
+            for r in tm.rows:
+                label = (r.label or '')
+                if r.kind in ('section', 'subtotal') and any(
+                        k in label for k in ('净值', '账面价值')):
+                    cur_is_value = True
+                    continue
+                if cur_is_value and r.kind in ('detail', 'subtotal', 'total'):
+                    value_block_rows.add(r.row)
+
             for r in tm.rows:
                 if r.kind not in ('detail', 'total', 'subtotal') or not r.label:
                     continue
-                # 账面价值这类是倒算出来的，不服从"期初+增加−减少"
                 if any(k in (r.label or '') for k in ('账面价值', '净值', '净额')):
+                    continue
+                if r.row in value_block_rows:
                     continue
                 terms = [Term(+1, r.row, beg_col.index + 1)]
                 terms += [Term(+1, r.row, c.index + 1) for c in plus_inc]
@@ -710,7 +775,10 @@ def _rule_move(tm, checks):
                           + [Term(+1, r.row, c.index + 1) for c in plus_inc]
                           + [Term(-1, r.row, c.index + 1) for c in minus_dec]
                           + [Term(+1, r.row, c.index + 1) for c in extras]]
-                    if extras else None,
+                    if extras else
+                    [[Term(+1, r.row, beg_col.index + 1)]
+                     + [Term(+1, r.row, c.index + 1) for c in plus_inc]
+                     + [Term(+1, r.row, c.index + 1) for c in minus_dec]],
                     soft_fail=bool(has_extra),
                 ))
 
@@ -1144,19 +1212,12 @@ def _rule_ecl(tm, checks):
                       if r is not None}) <= 4
 
     for c in _data_columns(tm):
+        # 三阶段表的变动行本身就是**带正负号的金额**（计提可能是负数、
+        # 核销也常写成负数），所以一律相加，不能再套一次符号。
         terms = [Term(+1, beg.row, c.index + 1)]
-        if move is not None:
-            terms.append(Term(+1, move.row, c.index + 1))
-        if prov is not None:
-            terms.append(Term(+1, prov.row, c.index + 1))
-        if back is not None:
-            terms.append(Term(-1, back.row, c.index + 1))
-        if write is not None:
-            terms.append(Term(-1, write.row, c.index + 1))
-        if cancel is not None:
-            terms.append(Term(-1, cancel.row, c.index + 1))
-        if other is not None:
-            terms.append(Term(+1, other.row, c.index + 1))
+        for r in (move, prov, back, write, cancel, other):
+            if r is not None:
+                terms.append(Term(+1, r.row, c.index + 1))
         checks.append(CheckItem(
             rule_id='R-ECL', level='hard',
             chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
