@@ -194,6 +194,11 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                 rules_here.append(it.rule_id)
     check_cols = {}
     base_col = tm.ref.cols + 2
+    # 报表勾稽列是全局统一的，横向列不能压到它们上面；
+    # 会撞的话就顺延到报表/TB 块后面
+    report_start = min(report_map.values()) if report_map else 999
+    if rules_here and base_col + len(rules_here) > report_start:
+        base_col = (max(tb_map.values()) if tb_map else report_start) + 2
     for i, rid in enumerate(rules_here):
         check_cols[rid] = base_col + i
         hc = ws.cell(row_ptr - 1, check_cols[rid], horiz_map[rid])
@@ -1088,10 +1093,15 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     stats['missing_count'] = len(disclosure or [])
 
     periods = _period_slots(cross, tb_checks)
-    # 统一列起点：按最宽的表 + 横向勾稽列（最多 5 个）+ 余量算，
-    # 这样所有表的报表勾稽列在同一列，又不会跟表体撞上
-    widest = max([t.ref.cols for t in tables] + [8])
-    _BASE = widest + 2 + 5 + 2
+    # 统一列起点：按"最宽的表 + 它实际用到的横向勾稽列数"算，
+    # 不留无用富余，否则窄表的报表勾稽会跑到很远的列去
+    _horiz = {'H-SUM', 'R-NET', 'R-NBV', 'R-MOVE', 'R-PCT'}
+    _by_tab = {}
+    for it in checks:
+        if it.rule_id in _horiz:
+            _by_tab.setdefault(it.table_idx, set()).add(it.rule_id)
+    _max_end = max([t.ref.cols for t in tables] + [6])
+    _BASE = _max_end + 1
     report_map, tb_map = _col_map(periods, base=_BASE)
 
     # 右侧表头改为每张表自己写（列位置随表宽浮动，不再锁定固定列）
