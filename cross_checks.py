@@ -306,8 +306,9 @@ def build_cross_checks(model, tables, report, get_value=None):
         for sub in ch.sub_items:
             # 「归属于母公司所有者的…」这类是别的科目的组成部分，
             # 不是独立披露科目，不能拿它去和报表项目匹配
-            if sub.name.startswith(('归属于', '其中', '减：', '加：')):
+            if sub.name.startswith(('其中', '减：', '加：')):
                 continue
+            is_oci_group = sub.name.startswith('归属于')
             group = by_sub.get((ch.name, sub.name), [])
             names = _split_names(sub.name)
             tm, tot = _pick_main_table(group, names)
@@ -315,7 +316,21 @@ def build_cross_checks(model, tables, report, get_value=None):
                 continue
 
             scope = ch.scope
-            sheet, found, matched_name = _match_report(report, scope, names)
+            # 逐个候选名去报表里找：一个编号可能覆盖多个报表项目
+            hits = []
+            for nm in names:
+                sh, fd, mn = _match_report(report, scope, [nm])
+                if sh is not None and fd is not None:
+                    if is_oci_group and mn == '其他综合收益':
+                        continue
+                    hits.append((sh, fd, mn))
+            if not hits:
+                sh, fd, mn = _match_report(report, scope, names)
+                if sh is not None and fd is not None and not (
+                        is_oci_group and mn == '其他综合收益'):
+                    hits = [(sh, fd, mn)]
+            sheet, found, matched_name = (hits[0] if hits
+                                          else (None, None, None))
             if sheet is None or found is None:
                 out.append(CrossCheck(
                     chapter=ch.name, scope=scope, sub_item=sub.name, name=sub.name,
