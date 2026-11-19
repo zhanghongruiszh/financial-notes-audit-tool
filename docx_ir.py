@@ -112,7 +112,56 @@ def _dump_table(tbl, tidx):
     tbl_el = tbl._tbl
 
     grid_el = tbl_el.find(qn('w:tblGrid'))
-    n_cols = len(grid_el.findall(qn('w:gridCol'))) if grid_el is not None else 0
+    col_el = grid_el.findall(qn('w:gridCol')) if grid_el is not None else []
+    n_cols = len(col_el)
+    widths = []
+    for c in col_el:
+        try:
+            widths.append(int(c.get(qn('w:w'), '0')))
+        except (TypeError, ValueError):
+            widths.append(0)
+    # Word 里常有 100 多 twips 的"分隔列"，它会把合并格和数据列错开一格。
+    # 只丢**又窄又完全空白**的列：先把所有格子的文字落在哪些原始列上扫一遍。
+    tr_list_pre = tbl_el.findall(qn('w:tr'))
+    content_cols = set()
+    for _tr in tr_list_pre:
+        _col = 0
+        _trPr = _tr.find(qn('w:trPr'))
+        if _trPr is not None:
+            _gb = _trPr.find(qn('w:gridBefore'))
+            if _gb is not None:
+                try:
+                    _col = int(_gb.get(qn('w:val'), '0'))
+                except (TypeError, ValueError):
+                    _col = 0
+        for _tc in _tr.findall(qn('w:tc')):
+            _span = 1
+            _tcPr = _tc.find(qn('w:tcPr'))
+            if _tcPr is not None:
+                _gs = _tcPr.find(qn('w:gridSpan'))
+                if _gs is not None:
+                    try:
+                        _span = max(1, int(_gs.get(qn('w:val'), '1')))
+                    except (TypeError, ValueError):
+                        _span = 1
+            _txt = _qc(_tc)
+            if _txt.strip():
+                for _k in range(_span):
+                    content_cols.add(_col + _k)
+            _col += _span
+
+    narrow = set()
+    if widths:
+        pos = sorted(w for w in widths if w > 0)
+        median = pos[len(pos) // 2] if pos else 0
+        if median > 0:
+            narrow = {i for i, w in enumerate(widths)
+                      if 0 < w < median * 0.25 and w < 250}
+
+    def _new_index(old_i):
+        if not narrow:
+            return old_i
+        return sum(1 for i in range(old_i) if i not in narrow)
 
     tr_list = tbl_el.findall(qn('w:tr'))
     n_rows = len(tr_list)
@@ -152,8 +201,14 @@ def _dump_table(tbl, tidx):
 
             # 把真实的合并跨度记下来：后面还原表头必须靠它，
             # 只靠 'h' 标记按位置推断会错位（Word 里合并格起点常偏一格）
-            row.append({'t': text, 'm': 'v' if is_cont else ' ', 'span': span})
-            for _k in range(1, span):
+            # 这一格覆盖的原始列号
+            cover = [col + k for k in range(span)]
+            keep = [i for i in cover if i not in narrow]
+            if not keep:
+                col += span
+                continue      # 整格都落在窄分隔列里，直接丢掉，不占列
+            row.append({'t': text, 'm': 'v' if is_cont else ' ', 'span': len(keep)})
+            for _k in range(1, len(keep)):
                 row.append({'t': '', 'm': 'x' if is_cont else 'h', 'span': 0})
             col += span
 
