@@ -510,6 +510,7 @@ def selftest(out_path):
         import report_reader                 # noqa: F401
         import rules                         # noqa: F401
         import table_semantics               # noqa: F401
+        import table_types                   # noqa: F401
         import tb_checks                     # noqa: F401
         import tb_reader                     # noqa: F401
         import template_lib                  # noqa: F401

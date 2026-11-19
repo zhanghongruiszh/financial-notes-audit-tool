@@ -89,7 +89,8 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats):
 
     # 表标题
     ws.cell(row_ptr, 1, f'{tm.chapter} ｜ {tm.sub_item} ｜ 表#{tm.ref.idx} '
-                        f'（{tm.ref.rows}行×{tm.ref.cols}列）')
+                        f'（{tm.ref.rows}行×{tm.ref.cols}列）'
+                        f'｜ {tm.table_type_name or "未分类"}')
     ws.cell(row_ptr, 1).font = F_TABLE_TITLE
     ws.cell(row_ptr, 1).fill = FILL_TABLE_TITLE
     for c in range(2, max(3, tm.ref.cols) + 1):
@@ -287,6 +288,19 @@ def _write_summary_sheet(ws, stats, results, model, tables, source_note=''):
     for i, (k, v) in enumerate(sorted(by_rule.items()), row + 1):
         ws.cell(i, 1, k).font = F_BODY
         ws.cell(i, 2, f'{rule_name.get(k, "")}　{v} 条').font = F_BODY
+
+    # 按附注表类型统计
+    try:
+        import table_types
+        dist = table_types.summarize(tables)
+    except Exception:
+        dist = {}
+    if dist:
+        row2 = row + len(by_rule) + 3
+        ws.cell(row2, 1, '按附注表类型分布').font = F_HEADER
+        for i, (name, n) in enumerate(dist.items(), row2 + 1):
+            ws.cell(i, 1, name).font = F_BODY
+            ws.cell(i, 2, f'{n} 张').font = F_BODY
 
 
 # ---------------------------------------------------------------- 报表勾稽

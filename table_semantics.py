@@ -167,6 +167,9 @@ class TableModel:
     columns: List[Column] = field(default_factory=list)
     rows: List[RowInfo] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    table_type: str = 'OTHER'      # 表类型代码，见 table_types
+    table_type_name: str = ''
+    type_confidence: float = 0.0
 
     @property
     def data_columns(self):
@@ -484,6 +487,18 @@ def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
     )
 
 
+def _finish_table(tm):
+    """给表打上类型标签（放在语义解析之后，因为要用到列角色与行标签）。"""
+    try:
+        import table_types
+        code, name, conf = table_types.classify(tm, tm.sub_item)
+        tm.table_type, tm.table_type_name = code, name
+        tm.type_confidence = conf
+    except Exception:
+        pass
+    return tm
+
+
 def analyze_document(doc_model, hint=None, stats=None):
     """对整份附注的所有表做语义解析。
 
@@ -500,7 +515,7 @@ def analyze_document(doc_model, hint=None, stats=None):
                 tm = analyze_table(t, ctx, ch.name, sub.name)
                 if hint is not None:
                     _apply_template_hint(tm, hint, ch.name, sub.name, n, stats)
-                out.append(tm)
+                out.append(_finish_table(tm))
     return out
 
 
