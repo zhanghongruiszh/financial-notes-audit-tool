@@ -56,6 +56,16 @@ class AuditCheckApp(tk.Tk):
         self.last_out_dir = None
         self.center_window()
 
+        # 窗口图标（打包后在 exe 同目录的 assets 里）
+        try:
+            base = getattr(sys, '_MEIPASS',
+                           os.path.dirname(os.path.abspath(__file__)))
+            ico = os.path.join(base, 'assets', 'app.ico')
+            if os.path.exists(ico):
+                self.iconbitmap(ico)
+        except Exception:
+            pass
+
         self.style = ttk.Style()
         try:
             self.style.theme_use('vista')
