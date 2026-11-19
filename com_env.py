@@ -17,10 +17,98 @@ PyInstaller onefile 运行时会把解包目录 `_MEIxxxx` 加到 PATH 和 DLL �
 调用完再恢复。源码运行时什么都不做。
 """
 
+import hashlib
 import os
+import shutil
 import sys
+import tempfile
 
 _SAVED = {}
+
+STAGING_DIR = 'notes_conv'
+
+
+def _is_ascii(path):
+    try:
+        path.encode('ascii')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _candidates(preferred_dir=None):
+    """按优先级给出可用的暂存目录。
+
+    优先级：调用方给的工作目录 → 当前工作目录 → 程序目录 → 系统临时目录。
+    只接受**纯 ASCII 且确实可写**的路径——中文路径会让 Office 打不开，
+    而受限环境里 AppData\\Temp 也可能不可写。
+    """
+    out = []
+    if preferred_dir:
+        out.append(os.path.join(os.path.abspath(preferred_dir), '_conv'))
+    try:
+        out.append(os.path.join(os.getcwd(), '_conv'))
+    except Exception:
+        pass
+    try:
+        out.append(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '_conv'))
+    except Exception:
+        pass
+    out.append(os.path.join(tempfile.gettempdir(), STAGING_DIR))
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        out.append(os.path.join(local, 'Temp', STAGING_DIR))
+    return out
+
+
+def ascii_staging(path, suffix=None, preferred_dir=None):
+    """把文件摆到一个纯 ASCII 的暂存路径，供 Office 打开。
+
+    打包版里把中文路径直接交给 Word/Excel，会出现：
+        Word：Word 未能引发事件 / 卡住不返回
+        Excel：不能访问 INetCache\\Content.MSO\\
+    同一文件复制成纯英文路径就完全正常——是路径编码在冻结环境里被破坏。
+
+    返回 (可交给 Office 的路径, 是否是复制出来的副本)。
+    """
+    path = os.path.abspath(path)
+    if _is_ascii(path):
+        return path, False
+
+    suffix = suffix or os.path.splitext(path)[1]
+    digest = hashlib.md5(path.encode('utf-8')).hexdigest()[:10]
+
+    for base in _candidates(preferred_dir):
+        if not _is_ascii(base):
+            continue
+        try:
+            os.makedirs(base, exist_ok=True)
+            dst = os.path.join(base, f'src_{digest}{suffix}')
+            if (not os.path.exists(dst)
+                    or os.path.getmtime(dst) < os.path.getmtime(path)):
+                shutil.copy2(path, dst)
+            return dst, True
+        except Exception:
+            continue
+
+    return path, False
+
+
+def staging_dir(preferred_dir=None):
+    """与 ascii_staging 同目录，用于放转换结果。"""
+    for base in _candidates(preferred_dir):
+        if not _is_ascii(base):
+            continue
+        try:
+            os.makedirs(base, exist_ok=True)
+            probe = os.path.join(base, '.w')
+            with open(probe, 'w') as f:
+                f.write('x')
+            os.remove(probe)
+            return base
+        except Exception:
+            continue
+    return None
 
 
 def sanitize():

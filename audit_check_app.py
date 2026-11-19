@@ -763,11 +763,118 @@ def gui_run(notes, report, tb, archive_root, result_path):
     return 0 if state['ok'] else 1
 
 
+def xls_probe(src, log_path):
+    """在打包环境里试 Excel 打开文件，比较中文路径与纯英文路径。"""
+    import shutil
+    lines = []
+
+    def log(msg):
+        lines.append(str(msg))
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+    log('TEMP=%s' % os.environ.get('TEMP'))
+    log('USERPROFILE=%s' % os.environ.get('USERPROFILE'))
+    log('CWD=%s' % os.getcwd())
+    log('源文件存在=%s' % os.path.exists(src))
+
+    import win32com.client as win32
+
+    def try_open(path, label):
+        xl = None
+        try:
+            xl = win32.DispatchEx('Excel.Application')
+            xl.Visible = False
+            xl.DisplayAlerts = False
+            wb = xl.Workbooks.Open(os.path.abspath(path), ReadOnly=True)
+            log(f'   [{label}] OK 表数={wb.Sheets.Count}')
+            wb.Close(False)
+            return True
+        except Exception as exc:
+            log(f'   [{label}] 失败: {exc}')
+            return False
+        finally:
+            if xl is not None:
+                try:
+                    xl.Quit()
+                except Exception:
+                    pass
+
+    log('1 原路径（中文）')
+    try_open(src, '中文路径')
+
+    ascii_dir = os.path.join(os.path.dirname(os.path.abspath(log_path)), 'ascii')
+    os.makedirs(ascii_dir, exist_ok=True)
+    ascii_path = os.path.join(ascii_dir, 'probe.xls')
+    try:
+        shutil.copy2(src, ascii_path)
+        log('2 纯英文路径 %s' % ascii_path)
+        try_open(ascii_path, '英文路径')
+    except Exception as exc:
+        log('   复制失败: %s' % (exc,))
+    return 0
+
+
+def word_probe(src, log_path):
+    """在打包环境里试 Word 打开文档：原路径 vs 英文暂存路径。"""
+    import time
+    lines = []
+
+    def log(msg):
+        lines.append(str(msg))
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+    import com_env
+    import win32com.client as win32
+
+    log('TEMP=%s' % os.environ.get('TEMP'))
+    staged, copied = com_env.ascii_staging(src, '.doc')
+    log('暂存路径=%s 复制=%s' % (staged, copied))
+
+    for label, target in (('原路径', os.path.abspath(src)), ('英文暂存', staged)):
+        t0 = time.time()
+        word = None
+        try:
+            with com_env.sanitized():
+                word = win32.DispatchEx('Word.Application')
+            log(f'   [{label}] DispatchEx {time.time()-t0:.1f}s')
+            word.Visible = False
+            word.DisplayAlerts = 0
+            log(f'   [{label}] 设置属性 {time.time()-t0:.1f}s')
+            doc = word.Documents.Open(os.path.abspath(target),
+                                      ConfirmConversions=False, ReadOnly=True,
+                                      AddToRecentFiles=False)
+            log(f'   [{label}] Open OK {time.time()-t0:.1f}s')
+            doc.Close(False)
+        except Exception as exc:
+            log(f'   [{label}] 失败 {time.time()-t0:.1f}s: {exc}')
+        finally:
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+    return 0
+
+
 def main():
     if '--selftest' in sys.argv:
         idx = sys.argv.index('--selftest')
         out = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else 'selftest.txt'
         raise SystemExit(selftest(out))
+    if '--wordprobe' in sys.argv:
+        idx = sys.argv.index('--wordprobe')
+        args = sys.argv[idx + 1:idx + 3]
+        if len(args) < 2:
+            raise SystemExit(2)
+        raise SystemExit(word_probe(*args))
+    if '--xlsprobe' in sys.argv:
+        idx = sys.argv.index('--xlsprobe')
+        args = sys.argv[idx + 1:idx + 3]
+        if len(args) < 2:
+            raise SystemExit(2)
+        raise SystemExit(xls_probe(*args))
     if '--comprobe' in sys.argv:
         idx = sys.argv.index('--comprobe')
         args = sys.argv[idx + 1:idx + 3]

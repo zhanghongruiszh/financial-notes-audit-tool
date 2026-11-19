@@ -53,23 +53,49 @@ def ensure_xlsx(path, work_dir=None):
     import com_env
     import docx_ir
 
+    src_use, _ = com_env.ascii_staging(path, '.xls', work_dir)
+    early = com_env.staging_dir(work_dir)
+    if early:
+        import hashlib
+        tag = hashlib.md5(os.path.abspath(path).encode('utf-8')).hexdigest()[:10]
+        out_stage = os.path.join(early, f'tb_{tag}.xlsx')
+    else:
+        out_stage = dst
+
     def _convert():
         with com_env.sanitized():
             xl = win32.DispatchEx('Excel.Application')
         try:
             xl.Visible = False
             xl.DisplayAlerts = False
-            wb = xl.Workbooks.Open(os.path.abspath(path), ReadOnly=True)
-            wb.SaveAs(os.path.abspath(dst), FileFormat=51)   # xlOpenXMLWorkbook
+            wb = xl.Workbooks.Open(os.path.abspath(src_use), ReadOnly=True)
+            wb.SaveAs(os.path.abspath(out_stage), FileFormat=51)   # xlOpenXMLWorkbook
             wb.Close(False)
         finally:
             try:
                 xl.Quit()
             except Exception:
                 pass
-        return dst
+        return out_stage
 
-    return docx_ir._run_com_with_timeout(_convert, 120, 'Excel 转换 TB')
+    last_error = None
+    for attempt in (1, 2):
+        try:
+            docx_ir._run_com_with_timeout(_convert, 120, 'Excel 转换 TB')
+            last_error = None
+            break
+        except Exception as exc:      # noqa: BLE001
+            last_error = exc
+            if attempt == 1:
+                # Office 首次启动会初始化缓存，个别环境第一次必失败，再试一次
+                import time
+                time.sleep(2)
+    if last_error is not None:
+        raise last_error
+    if os.path.abspath(out_stage) != os.path.abspath(dst):
+        import shutil
+        shutil.copy2(out_stage, dst)
+    return dst
 
 
 _CN_DIGIT = {'1': '一', '2': '二', '3': '三', '4': '四', '5': '五',

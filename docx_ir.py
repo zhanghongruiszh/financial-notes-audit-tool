@@ -265,9 +265,17 @@ def ensure_docx(src_path, work_dir=None):
     import win32com.client as win32
     import com_env
 
+    # 中文路径在打包环境里交给 Word 会出问题，先摆到纯英文暂存路径
+    src_use, staged = com_env.ascii_staging(src_path, '.doc', work_dir)
+    early = com_env.staging_dir(work_dir)
+    if early:
+        import hashlib
+        tag = hashlib.md5(os.path.abspath(src_path).encode('utf-8')).hexdigest()[:10]
+        out_stage = os.path.join(early, f'out_{tag}.docx')
+    else:
+        out_stage = dst
+
     def _convert():
-        # 打包版里 PyInstaller 会把 _MEI 目录塞进 PATH，Word 子进程继承后可能起不来；
-        # 调 Office 之前先把环境擦干净，调完恢复。
         word = None
         with com_env.sanitized():
             word = win32.DispatchEx('Word.Application')
@@ -280,18 +288,22 @@ def ensure_docx(src_path, work_dir=None):
                 pass
             # 注意：Word 的当前工作目录不是本进程的当前目录，
             # Open/SaveAs2 必须传绝对路径，否则报"这不是有效文件名"。
-            doc = word.Documents.Open(os.path.abspath(src_path), ConfirmConversions=False,
+            doc = word.Documents.Open(os.path.abspath(src_use), ConfirmConversions=False,
                                       ReadOnly=True, AddToRecentFiles=False)
-            doc.SaveAs2(os.path.abspath(dst), FileFormat=16)
+            doc.SaveAs2(os.path.abspath(out_stage), FileFormat=16)
             doc.Close(False)
         finally:
             try:
                 word.Quit()
             except Exception:
                 pass
-        return dst
+        return out_stage
 
-    return _run_com_with_timeout(_convert, 120, 'Word 转换附注')
+    _run_com_with_timeout(_convert, 120, 'Word 转换附注')
+    if os.path.abspath(out_stage) != os.path.abspath(dst):
+        import shutil
+        shutil.copy2(out_stage, dst)
+    return dst
 
 
 # ---------------------------------------------------------------- 章节结构
