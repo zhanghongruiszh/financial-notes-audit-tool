@@ -402,6 +402,12 @@ def _build_raw_data(wb, report, tb_xlsx, tb_sheet_names):
 def _block_header(ws, row, title, headers, widths=None):
     c = ws.cell(row, 1, title)
     c.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+    # 标题跨列合并：否则长标题会把第一列撑得很宽（序号列本该很窄）
+    try:
+        ws.merge_cells(start_row=row, start_column=1,
+                       end_row=row, end_column=max(len(headers), 6))
+    except Exception:
+        pass
     row += 1
     for i, h in enumerate(headers, 1):
         cell = ws.cell(row, i, h)
@@ -492,8 +498,7 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
             by_period = {c.period: c for c in checks}
             nc = note_no.get((sheet.name, _rr.normalize_name(name)))
 
-            vals = [0, name,
-                    (nc.actual if nc else ''),
+            vals = [0, '', (nc.actual if nc else ''),
                     (checks[0].sub_item if checks else '')]
             any_amount = False
             for d in periods:
@@ -536,6 +541,18 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                 cell.border = BORDER
                 if 5 <= i < col_flag and isinstance(v, (int, float)):
                     cell.number_format = FMT_AMOUNT
+            # 报表项目名本身就是链接：点一下跳到底稿对应科目
+            name_cell = ws.cell(r, 2, name)
+            target_row = ((note_rows or {}).get((checks[0].note_table,
+                                                 checks[0].note_row))
+                          if checks else None)
+            if target_row:
+                from openpyxl.worksheet.hyperlink import Hyperlink
+                name_cell.hyperlink = Hyperlink(
+                    ref=name_cell.coordinate,
+                    location=f"'勾稽底稿'!A{target_row}")
+                name_cell.font = Font(name='微软雅黑', size=9, color='0563C1',
+                                      underline='single')
             color = {'一致': FILL_PASS, '有差异': FILL_FAIL_TARGET,
                      '待确认': FILL_UNKNOWN}.get(state)
             if color:
@@ -743,8 +760,9 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
     except Exception:
         pass
 
-    for col, w in (('A', 26), ('B', 46), ('C', 18), ('D', 18), ('E', 16),
-                   ('F', 46), ('G', 12), ('H', 16), ('I', 16), ('J', 14)):
+    for col, w in (('A', 6), ('B', 30), ('C', 12), ('D', 22), ('E', 18),
+                   ('F', 18), ('G', 14), ('H', 18), ('I', 18), ('J', 14),
+                   ('K', 10), ('L', 10), ('M', 18)):
         ws.column_dimensions[col].width = w
 
 
