@@ -179,6 +179,19 @@ class AuditCheckApp(tk.Tk):
         self.log('[说明] 成果按 <项目名>check_v<版本号> 建文件夹，'
                  '每版都放入附注、报表、TB 与 check 结果四个文件。')
 
+        # 页脚：项目地址与联系邮箱（常驻窗口底部）
+        footer = tk.Frame(main)
+        # 必须排在日志区之前 pack 到底部，否则会被可伸展的日志区挤掉
+        footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0), before=grp_log)
+        tk.Label(footer, text='项目地址：', font=('微软雅黑', 8),
+                 fg='#808080').pack(side=tk.LEFT)
+        tk.Label(footer, text=GITHUB_URL, font=('微软雅黑', 8),
+                 fg='#0563C1', cursor='hand2').pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(footer, text='联系邮箱：', font=('微软雅黑', 8),
+                 fg='#808080').pack(side=tk.LEFT)
+        tk.Label(footer, text=AUTHOR_EMAIL, font=('微软雅黑', 8),
+                 fg='#0563C1', cursor='hand2').pack(side=tk.LEFT)
+
     # ------------------------------------------------------------ 工具
 
     def log(self, msg):
