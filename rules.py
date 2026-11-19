@@ -515,8 +515,11 @@ def _rule_asset_blocks(tm, checks):
                     terms=[Term(+1, gross.row, c.index + 1),
                            Term(-1, dep.row, c.index + 1)],
                 ))
-            base = net
+            # 净值行这一列是空的（Word 漏填）就退回"原值 − 折旧 − 减值"
+            has_net = bool(cell_number(tm.ref.grid, net.row, c.index + 1))
+            base = net if has_net else gross
         else:
+            has_net = False
             base = gross
         if not cell_number(tm.ref.grid, value.row, c.index + 1):
             continue
@@ -525,8 +528,8 @@ def _rule_asset_blocks(tm, checks):
                 not cell_number(tm.ref.grid, dep.row, c.index + 1):
             continue
         terms = [Term(+1, base.row, c.index + 1)]
-        if net is None:
-            terms.append(Term(-1, dep.row, c.index + 1))   # 没有净值行就多减一次
+        if not has_net:
+            terms.append(Term(-1, dep.row, c.index + 1))   # 没有净值（或为空）就多减一次
         if imp is not None:
             terms.append(Term(-1, imp.row, c.index + 1))
         checks.append(CheckItem(

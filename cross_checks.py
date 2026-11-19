@@ -321,6 +321,8 @@ def fill_missing_checks(model, tables, report, out, get_value=None):
         for name, (row, item_col) in sheet.items.items():
             if rn is not None and rn.is_no_note_item(name):
                 continue
+            if name == '其他综合收益':
+                continue      # 确实没披露，不能拿 OCI 那一节顶替
             # 现金流量表只有"经营活动产生的现金流量净额"和附注勾，
             # 其余子项走 TB 核对，不在这里补配
             if sheet.name.startswith('现金流量表') and \
