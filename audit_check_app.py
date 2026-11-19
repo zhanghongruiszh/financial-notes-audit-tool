@@ -156,8 +156,6 @@ class AuditCheckApp(tk.Tk):
              self.on_fix_numbering).pack(side=tk.LEFT, padx=(0, 10))
         _btn(btn_frame, '报表附注号一键修复与补全',
              self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
-        _btn(btn_frame, '转换 docx/xlsx',
-             self.on_convert).pack(side=tk.LEFT, padx=(0, 10))
         _btn(btn_frame, '打开输出文件夹',
              self.open_out_dir).pack(side=tk.RIGHT)
 
@@ -381,49 +379,6 @@ class AuditCheckApp(tk.Tk):
             except Exception as exc:
                 self.log('[指纹] 失败：' + str(exc))
                 self.after(0, lambda: messagebox.showerror('导出失败', str(exc)))
-            finally:
-                self.after(0, lambda: self.btn_run.config(
-                    state=tk.NORMAL, text='开始自动化全面勾稽'))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    # ------------------------------------------------------------ 格式转换
-
-    def on_convert(self):
-        """把选中的 .doc/.xls 转成同目录的 .docx/.xlsx，并把输入框换成新文件。"""
-        notes = self.var_notes.get().strip()
-        report = self.var_report.get().strip()
-        tb = self.var_tb.get().strip()
-        if not (notes or report or tb):
-            messagebox.showwarning('提示', '请先选择要转换的文件。')
-            return
-
-        self.btn_run.config(state=tk.DISABLED, text='转换中...')
-        self.log('\n' + '=' * 60)
-        self.log('[转换] 把 .doc/.xls 转成 .docx/.xlsx ...')
-
-        def work():
-            _co_init()
-            try:
-                import convert_inputs
-                pairs = convert_inputs.convert_many(
-                    [p for p in (notes, report, tb) if p], log=self.log)
-                mapping = {os.path.abspath(o): n for o, n, m in pairs if n}
-
-                def apply_paths():
-                    if notes and os.path.abspath(notes) in mapping:
-                        self.var_notes.set(mapping[os.path.abspath(notes)])
-                    if report and os.path.abspath(report) in mapping:
-                        self.var_report.set(mapping[os.path.abspath(report)])
-                    if tb and os.path.abspath(tb) in mapping:
-                        self.var_tb.set(mapping[os.path.abspath(tb)])
-
-                self.after(0, apply_paths)
-                ok = sum(1 for o, n, m in pairs if m in ('已转换', '复用了已有转换结果'))
-                self.log(f'[转换] 完成，{ok} 个文件已是 docx/xlsx')
-            except Exception as exc:        # noqa: BLE001
-                self.log('[转换] 失败：' + str(exc))
-                self.after(0, lambda: messagebox.showerror('转换失败', str(exc)))
             finally:
                 self.after(0, lambda: self.btn_run.config(
                     state=tk.NORMAL, text='开始自动化全面勾稽'))
