@@ -247,8 +247,9 @@ class AuditCheckApp(tk.Tk):
             messagebox.showwarning('提示', '请先选择有效的财务报表文件。')
             return
         if not tb or not os.path.exists(tb):
-            messagebox.showwarning('提示', '请先选择有效的 TB 试算表。')
-            return
+            # TB 是可选的：不导入也能做全部附注勾稽，只是现金流量表子项
+            # 不再与 TB 核对（成果表里会标注"未与 TB 核对"）
+            tb = ''
 
         self.btn_run.config(state=tk.DISABLED, text='勾稽运算中...')
         self.log('\n' + '=' * 60)
@@ -271,7 +272,7 @@ class AuditCheckApp(tk.Tk):
                                      f'{os.path.basename(new)}（{msg}）')
                 notes2 = use.get(os.path.abspath(notes), notes)
                 report2 = use.get(os.path.abspath(report), report)
-                tb2 = use.get(os.path.abspath(tb), tb)
+                tb2 = (use.get(os.path.abspath(tb), tb) if tb else '')
 
                 def apply_paths():
                     self.var_notes.set(notes2)

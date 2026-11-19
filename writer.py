@@ -458,8 +458,15 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
           stats['pass'], stats['fail'], stats['skip'], '无法计算')
     group('报表勾稽', stats['cross_pass'] + stats['cross_fail'] + stats['cross_unmatched'],
           stats['cross_pass'], stats['cross_fail'], stats['cross_unmatched'])
-    group('TB现金流核对', stats['tb_pass'] + stats['tb_fail'] + stats['tb_unmatched'],
-          stats['tb_pass'], stats['tb_fail'], stats['tb_unmatched'])
+    if tb_count:
+        group('TB现金流核对', stats['tb_pass'] + stats['tb_fail'] + stats['tb_unmatched'],
+              stats['tb_pass'], stats['tb_fail'], stats['tb_unmatched'])
+    else:
+        ws.cell(r, 1, 'TB现金流核对').font = F_BODY
+        ws.cell(r, 2, '未导入 TB').font = F_BODY
+        ws.cell(r, 3, '现金流量表子项未与 TB 核对').font = Font(
+            name='微软雅黑', size=9, color='B25E00')
+        r += 1
     group('附注号勾稽', stats['nn_pass'] + stats['nn_fail'] + stats['nn_unmatched'],
           stats['nn_pass'], stats['nn_fail'], stats['nn_unmatched'])
     group('附注内跨表', stats['nx_pass'] + stats['nx_fail'] + stats['nx_unmatched'],

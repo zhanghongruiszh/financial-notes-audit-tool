@@ -361,6 +361,7 @@ def _cols_by_role(tm, period_key=None, period=None):
 # ---------------------------------------------------------------- 规则实现
 
 def _rule_v_sum(tm, checks):
+    """合计行 = 上方明细之和（含小计/其中/减项处理）。"""
     grid = tm.ref.grid
     totals = [r for r in tm.rows if r.kind == 'total']
     if not totals:

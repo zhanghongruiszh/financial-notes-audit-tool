@@ -213,6 +213,8 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     # 5) TB 现金流量表核对
     tb_results = []
     tb_xlsx = None
+    if not tb_path:
+        log('[4b/5] 未导入 TB，跳过现金流量表子项核对（成果表会标注）')
     if tb_path:
         log('[4b/5] 读取 TB 现金流量表并逐项核对 ...')
         import tb_reader
