@@ -80,6 +80,11 @@ def _pick_main_table(tables, names=None):
     变动明细等）。所以按文档顺序取第一张合格的，而不是按列数打分——
     否则应收账款会拿到「组合计提」那种分表，金额口径就错了。
     """
+    # 第零轮：有固化规则指定的代表行（租赁负债净额这类）
+    for tm in tables:
+        hinted = _hint_row(tm, names)
+        if hinted is not None:
+            return tm, hinted
     # 第一轮：有**「合计」**行且期间可定位（子项目下第一张这种表就是主表）
     for tm in tables:
         # 用统一的取行函数：它会优先挑「账面价值合计」，
@@ -121,6 +126,43 @@ ALIAS_NAMES = {
 }
 
 
+# 固化的取行规则：科目 -> 该科目在附注里"代表金额"那一行的写法
+# （换项目也照样生效，不依赖某个具体文件）
+ROW_HINTS = {
+    '租赁负债': ['租赁负债净额', '租赁负债'],
+    '递延所得税负债': ['递延所得税负债', '递延所得税负债净额'],
+    '递延所得税资产': ['递延所得税资产', '递延所得税资产净额'],
+    '长期股权投资': ['合计'],
+    '营业收入': ['营业收入', '合计'],
+    '营业成本': ['营业成本', '合计'],
+    '销售费用': ['销售费用', '合计'],
+    '管理费用': ['管理费用', '合计'],
+    '研发费用': ['研发费用', '合计'],
+    '财务费用': ['财务费用', '合计'],
+    '实收资本(或股本)': ['实收资本', '合计'],
+}
+
+
+def _hint_row(tm, names):
+    """按 ROW_HINTS 找代表行（行名包含提示词即可）。"""
+    def has_money(r):
+        return any(rules.cell_number(tm.ref.grid, r.row, c.index + 1)
+                   for c in (tm.columns or []) if c.is_data)
+
+    for n in (names or []):
+        for want in ROW_HINTS.get(n, []):
+            for r in tm.rows:
+                if r.kind not in ('detail', 'subtotal', 'total'):
+                    continue
+                if want not in (r.label or ''):
+                    continue
+                # 名字对上了但整行是 0：这不是代表行，继续找
+                if not has_money(r):
+                    continue
+                return r
+    return None
+
+
 def _summary_row_of(tm, names=None):
     """代表该子项目对外披露金额的行。
 
@@ -130,6 +172,9 @@ def _summary_row_of(tm, names=None):
       3. 标签里同时含子项目名与「期末/年末」的行（如「期末未分配利润」）
       4. 表里**只有一个**明细行时，就用它（合同负债这类只披露一行）
     """
+    hinted = _hint_row(tm, names)
+    if hinted is not None:
+        return hinted
     tot = _total_row_of(tm)
     if tot is not None:
         return tot

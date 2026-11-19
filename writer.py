@@ -151,7 +151,10 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     # 第一列放 Word 里的编号（如「六、3」），后面跟科目名；
     # 同一个子项目的后续子表不再重复挂标题，免得看花眼
     title_row = row_ptr
-    num = _cn_number(getattr(tm, 'sub_no', '') or '')
+    raw_no = getattr(tm, 'sub_no', '') or ''
+    num = raw_no.split('、')[-1] if raw_no else ''
+    if num.isdigit():
+        num = str(int(num))
     if show_title:
         label = f'{num}　{tm.sub_item}' if num else tm.sub_item
         title_cell = ws.cell(row_ptr, 1, label)
@@ -210,9 +213,10 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     # 起点由最宽的表决定，表再宽也不会覆盖
 
     periods = list(report_map.keys())
-    has_tb_here = any(k[0] == tm.ref.idx for k in (tb_by_row or {}))
-    for pp in periods:
-        hc = ws.cell(row_ptr - 1, report_map[pp], f'报表差额 {pp}')
+    has_tb_here = (show_title and
+                   any(k[0] == tm.ref.idx for k in (tb_by_row or {})))
+    for pp in (periods if show_title else []):
+        hc = ws.cell(row_ptr - 1, report_map[pp], '')
         hc.font = F_REPORT
         hc.fill = FILL_REPORT_HDR
         hc.alignment = Alignment(horizontal='center')
@@ -253,7 +257,8 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         note_row_map[(tm.ref.idx, r_idx)] = row_ptr
 
         # 右侧：只写差额公式，原始数字直接在公式里引用「原始数据」
-        for cc in report_by_row.get((tm.ref.idx, r_idx), []):
+        for cc in (report_by_row.get((tm.ref.idx, r_idx), [])
+                   if show_title else []):
             if cc.period in report_map:
                 dc = report_map[cc.period]
                 raw_ref = raw.ref(cc.sheet, cc.rows, cc.cols) if raw else None
@@ -445,7 +450,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         target_cell.fill = FILL_PASS
         target_cell.font = Font(name='Consolas', size=9, color='B25E00')
         for c in range(1, item.target_col + 1):
-            ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
+            ws.cell(row_ptr, c).fill = PatternFill(fill_type=None)
         stats['unclear'] += 1
     elif res.status == 'pass':
         target_cell.fill = FILL_PASS
@@ -454,7 +459,7 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         # 有差异：整格标红
         target_cell.fill = FILL_FAIL_TARGET
         for c in range(1, item.target_col + 1):
-            ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
+            ws.cell(row_ptr, c).fill = PatternFill(fill_type=None)
         stats['fail'] += 1
 
     for c in range(1, item.target_col + 1):
