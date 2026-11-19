@@ -136,7 +136,7 @@ def _write_right_headers(ws, row, periods, report_map, tb_map, has_tb):
 
 def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                  global_rows, report_by_row, tb_by_row, report_map, tb_map, raw=None,
-                 check_rows=None):
+                 check_rows=None, anomalies=None):
     grid = tm.ref.grid
 
     ws.cell(row_ptr, 1, f'{tm.chapter} ｜ {tm.sub_item} ｜ 表#{tm.ref.idx} '
@@ -172,6 +172,12 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             if not text:
                 continue
             import docx_ir
+            if anomalies is not None and docx_ir.is_trailing_minus(text):
+                # 「9,900.00-」这种尾随负号：数值照算，但要提示把 - 删掉
+                anomalies.append({
+                    'sub_item': tm.sub_item, 'table': tm.ref.idx,
+                    'row': r_idx, 'col': c_idx, 'text': str(text).strip(),
+                })
             value = docx_ir.parse_cell_value(text)
             _write_value(ws, row_ptr, c_idx, value)
             if _column_is_ratio(tm, c_idx - 1) and isinstance(value, float):
@@ -582,7 +588,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
 
 # ---------------------------------------------------------------- 完整性
 
-def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross):
+def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross, anomalies=None):
     ws.cell(1, 1, '完整性检查').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     r = 3
 
@@ -686,6 +692,30 @@ def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross):
     if not note_cross:
         ws.cell(r, 1, '（无）').font = F_BODY
         r += 1
+    r += 2
+
+    # 四、数值格式异常
+    ws.cell(r, 1, '四、数值格式异常（尾随负号，数值已按负数参与勾稽，请把「-」删掉）').font = F_HEADER
+    r += 1
+    for i, h in enumerate(['序号', '子项目', '表号', '表内行', '表内列', '原值', '处理建议'], 1):
+        c = ws.cell(r, i, h)
+        c.font = F_TITLE
+        c.fill = FILL_TITLE
+        c.alignment = Alignment(horizontal='center')
+        c.border = BORDER
+    r += 1
+    for n, a in enumerate(anomalies or [], 1):
+        vals = [n, a['sub_item'], f"表#{a['table']}", a['row'], a['col'],
+                a['text'], '删除尾随「-」，改为标准负数或 0']
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+        ws.cell(r, 6).fill = FILL_UNKNOWN
+        r += 1
+    if not anomalies:
+        ws.cell(r, 1, '（无）').font = F_BODY
+        r += 1
 
     for col, w in (('A', 8), ('B', 14), ('C', 14), ('D', 34), ('E', 16),
                    ('F', 16), ('G', 22), ('H', 10), ('I', 16), ('J', 14),
@@ -774,13 +804,14 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     global_rows = {}
     note_rows = {}
     check_rows = {}
+    anomalies = []
     row_ptr = 5
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
         row_ptr, nrm = _write_table(ws, tm, checks_by_table.get(key, {}),
                                     results_by_key, row_ptr, stats, global_rows,
                                     report_by_row, tb_by_row, report_map, tb_map,
-                                    raw, check_rows)
+                                    raw, check_rows, anomalies)
         note_rows.update(nrm)
         row_ptr += 1
 
@@ -804,7 +835,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                          check_rows=check_rows, note_rows=note_rows,
                          cross=cross, tb_checks=tb_checks, note_cross=note_cross)
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
-                           note_no_checks, note_cross)
+                           note_no_checks, note_cross, anomalies)
 
     wb.save(out_path)
     log(f'[输出] 成果表已生成：{out_path}')
@@ -824,4 +855,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
             f'有差异 {stats["nx_fail"]}，待确认 {stats["nx_unmatched"]}')
     if disclosure is not None:
         log(f'[输出] 未披露汇总 {len(disclosure)} 条（供人工判断）')
+    if anomalies:
+        log(f'[输出] 数值格式异常 {len(anomalies)} 处（尾随负号，已按负数参与勾稽，'
+            f'建议删除「-」）')
     return out_path, dict(stats)

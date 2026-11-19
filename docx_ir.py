@@ -333,13 +333,22 @@ def find_sub_items(stream, chapter):
 
 # ---------------------------------------------------------------- 值解析
 
+RE_TRAIL_MINUS = re.compile(r'^([\d,]+(?:\.\d+)?)\s*-\s*$')
+
+
+def is_trailing_minus(text):
+    """判断是不是「9,900.00-」这种尾随负号写法。"""
+    return bool(RE_TRAIL_MINUS.match(str(text or '').strip()))
+
+
 def parse_cell_value(text):
     """把表格文字转成 Excel 里能用的值。
 
     '7,921,661.42' -> 7921661.42
     '100.00%'      -> 1.0
     '2026年9月30日' -> datetime.date(2026, 9, 30)
-    '-' / '--'      -> '-'（保留，表示该格为无，不是 0）
+    '- / --'        -> '-'（保留，表示该格为无，不是 0）
+    '9,900.00-'     -> -9900.00（尾随负号，数值照算，另外单独提示删掉 -）
     ''              -> None
     """
     if text is None:
@@ -349,6 +358,13 @@ def parse_cell_value(text):
         return None
     if s in NIL_MARKS:
         return '-'
+
+    m = RE_TRAIL_MINUS.match(s)
+    if m:
+        try:
+            return -float(m.group(1).replace(',', ''))
+        except ValueError:
+            return s
 
     if RE_PERCENT.match(s):
         try:

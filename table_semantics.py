@@ -435,6 +435,12 @@ def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
 
     numeric_cols = {c.index for c in columns if _has_values(c.index)}
 
+    # 表头语义上是数值列的词。空模板、或本期整列都是「-」的列，
+    # 不能因为"没取到数"就当文字列——否则该核的加减关系会整条漏掉。
+    NUM_HEAD_WORDS = ('金额', '余额', '期初', '期末', '增加', '减少', '计提',
+                      '收回', '转回', '转销', '核销', '准备', '价值', '原值',
+                      '折旧', '成本', '收入', '费用', '税额', '合计', '数量')
+
     for c in columns:
         c.role = classify_role(c.path) if c.is_data else None
         if c.is_data:
@@ -445,6 +451,8 @@ def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
             c.kind = 'text'
         elif c.index in numeric_cols:
             c.kind = 'amount'
+        elif any(w in (c.header_text or '') for w in NUM_HEAD_WORDS):
+            c.kind = 'amount'        # 表头是数值口径，只是暂时没数
         else:
             c.kind = 'text'          # 既没角色又没数字 → 文字列（如"逾期时间"）
 
