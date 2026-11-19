@@ -192,6 +192,17 @@ class AuditCheckApp(tk.Tk):
         else:
             messagebox.showinfo('提示', '还没有生成过成果文件夹，请先执行勾稽。')
 
+    def out_target_dir(self, source_path):
+        """编号治理产物的落点。
+
+        已经跑过勾稽 → 放进那次的项目输出文件夹（这样一个文件夹里就有 4~6 个文件：
+        附注、报表、TB、check 成果，加上编号规范后的附注、编号修复后的报表）；
+        还没跑过勾稽 → 先放在源文件旁边，等勾稽时会一并归档进输出文件夹。
+        """
+        if self.last_out_dir and os.path.isdir(self.last_out_dir):
+            return self.last_out_dir
+        return os.path.dirname(os.path.abspath(source_path))
+
     # ------------------------------------------------------------ 勾稽
 
     def on_run(self):
@@ -262,7 +273,8 @@ class AuditCheckApp(tk.Tk):
                              f'子项目 {len(ch.sub_items)} 个')
 
                 base, ext = os.path.splitext(report)
-                out = f'{base}_附注编号已修复{ext}'
+                out = os.path.join(self.out_target_dir(report),
+                                   f'{os.path.basename(base)}_附注编号已修复{ext}')
                 out, changes = report_numbering.fix_report_numbers(
                     report, model, out, log=self.log)
                 for c in changes[:30]:
@@ -310,7 +322,9 @@ class AuditCheckApp(tk.Tk):
                         '（会新建文件，绝不覆盖原件）'):
                     return
 
-                out = os.path.splitext(doc)[0] + '_编号已规范.docx'
+                out = os.path.join(
+                    self.out_target_dir(doc),
+                    os.path.basename(os.path.splitext(doc)[0]) + '_编号已规范.docx')
                 _, _, detail = numbering_fixer.renumber_document(model, out, log=self.log)
                 ok = all(v[0] for v in detail.values())
                 self.log(f'[编号] 复核：{"全部连续 ✓" if ok else "仍有不连续 ✗"}')

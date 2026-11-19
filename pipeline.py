@@ -159,15 +159,32 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
                           cross=cross, report=report,
                           tb_checks=tb_results or None, tb_xlsx=tb_xlsx, log=log)
 
-    # 归档三个原始文件
+    # 归档导入的三个原始文件，以及（若存在）编号治理产出的两个文件
     archived = []
-    for src in (notes_path, report_path, tb_path):
+    seen = set()
+
+    def _archive(src):
         if not src or not os.path.exists(src):
-            continue
-        dst = os.path.join(out_dir, os.path.basename(src))
+            return
+        name = os.path.basename(src)
+        if name in seen:
+            return
+        dst = os.path.join(out_dir, name)
         if os.path.abspath(src) != os.path.abspath(dst):
             shutil.copy2(src, dst)
-        archived.append(os.path.basename(dst))
+        archived.append(name)
+        seen.add(name)
+
+    for src in (notes_path, report_path, tb_path):
+        _archive(src)
+
+    # 编号治理产物：Word 编号规范后的附注、报表附注号修复后的报表
+    for src in (notes_path, report_path):
+        if not src:
+            continue
+        base = os.path.splitext(os.path.abspath(src))[0]
+        for suffix in ('_编号已规范.docx', '_附注编号已修复.xlsx'):
+            _archive(base + suffix)
 
     # 清掉临时转换目录
     tmp_dir = os.path.join(out_dir, '_tmp')
