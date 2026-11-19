@@ -123,6 +123,14 @@ def _summary_row_of(tm, names=None):
             if label.startswith(('期末', '年末')) and \
                     any(n and n in label for n in names):
                 return r
+    # 变动表版式：末行常写「本期期末余额」，取最后一个"期末"行
+    tail = [r for r in tm.rows
+            if r.kind == 'detail' and r.label
+            and ('期末' in r.label or '年末' in r.label)
+            and '期初' not in r.label and '年初' not in r.label]
+    if tail:
+        return tail[-1]
+
     details = [r for r in tm.rows if r.kind == 'detail' and r.label]
     if len(details) == 1:
         return details[0]
@@ -167,6 +175,10 @@ def build_cross_checks(model, tables, report):
     out = []
     for ch in model.chapters:
         for sub in ch.sub_items:
+            # 「归属于母公司所有者的…」这类是别的科目的组成部分，
+            # 不是独立披露科目，不能拿它去和报表项目匹配
+            if sub.name.startswith(('归属于', '其中', '减：', '加：')):
+                continue
             group = by_sub.get((ch.name, sub.name), [])
             names = _split_names(sub.name)
             tm, tot = _pick_main_table(group, names)

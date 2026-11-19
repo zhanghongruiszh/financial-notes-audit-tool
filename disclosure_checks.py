@@ -155,6 +155,9 @@ def build_disclosure_checks(report_path, book, model):
             # 合计性质/子项性质的项目不需要单独披露
             if rn.is_no_note_item(key):
                 continue
+            # 与别的项目共用同一附注号的（如"实收资本净额"），不算漏披露
+            if key in {rr.normalize_name(k) for k in rn.REPORT_ITEM_ALIAS}:
+                continue
             key_nb = rr.normalize_name(rn._strip_brackets(key))
             if key_nb in SKIP_ITEMS or key in SKIP_ITEMS:
                 continue
