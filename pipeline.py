@@ -22,6 +22,7 @@ import shutil
 import time
 
 import cross_checks
+import report_relations
 import notes_parser
 import report_reader as rr
 import rules
@@ -203,6 +204,17 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
             return None
         v = wb_src[sheet_name].cell(row, col).value
         return float(v) if isinstance(v, (int, float)) else None
+
+    # 报表内部恒等式（不依赖附注）：资产=负债+权益、净利润=利润总额−所得税…
+    rel = report_relations.check(wb_src, report)
+    rel_stat = report_relations.summarize(rel)
+    log(f'      报表内部恒等式 {len(rel)} 条：'
+        f'平 {rel_stat.get("pass", 0)}'
+        + (f'，差异 {rel_stat["fail"]}' if rel_stat.get('fail') else '')
+        + (f'，不适用 {rel_stat["skip"]}' if rel_stat.get('skip') else ''))
+    for r in rel:
+        if r[6] == 'fail':
+            log(f'        ✗ {r[0]} {r[2]} {r[1]}：差 {r[5]:,.2f}')
 
     cross = cross_checks.build_cross_checks(
         model, tables, report, get_value=_get_value)
