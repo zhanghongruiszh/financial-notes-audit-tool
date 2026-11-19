@@ -179,18 +179,46 @@ class AuditCheckApp(tk.Tk):
         self.log('[说明] 成果按 <项目名>check_v<版本号> 建文件夹，'
                  '每版都放入附注、报表、TB 与 check 结果四个文件。')
 
-        # 页脚：项目地址与联系邮箱（常驻窗口底部）
+        # 页脚：项目地址与联系邮箱（常驻窗口底部，可点击打开、可复制）
         footer = tk.Frame(main)
         # 必须排在日志区之前 pack 到底部，否则会被可伸展的日志区挤掉
         footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0), before=grp_log)
-        tk.Label(footer, text='项目地址：', font=('微软雅黑', 8),
-                 fg='#808080').pack(side=tk.LEFT)
-        tk.Label(footer, text=GITHUB_URL, font=('微软雅黑', 8),
-                 fg='#0563C1', cursor='hand2').pack(side=tk.LEFT, padx=(0, 16))
-        tk.Label(footer, text='联系邮箱：', font=('微软雅黑', 8),
-                 fg='#808080').pack(side=tk.LEFT)
-        tk.Label(footer, text=AUTHOR_EMAIL, font=('微软雅黑', 8),
-                 fg='#0563C1', cursor='hand2').pack(side=tk.LEFT)
+
+        def link_field(label_text, value, opener, open_hint):
+            tk.Label(footer, text=label_text, font=('微软雅黑', 8),
+                     fg='#808080').pack(side=tk.LEFT)
+
+            def on_click(_event=None):
+                try:
+                    opener(value)
+                except Exception as exc:
+                    messagebox.showerror('打开失败', str(exc))
+
+            def on_copy(_event=None):
+                try:
+                    self.clipboard_clear()
+                    self.clipboard_append(value)
+                    self.log(f'[复制] {value}（已复制到剪贴板）')
+                except Exception as exc:
+                    messagebox.showerror('复制失败', str(exc))
+
+            lnk = tk.Label(footer, text=value, font=('微软雅黑', 8, 'underline'),
+                           fg='#0563C1', cursor='hand2')
+            lnk.pack(side=tk.LEFT, padx=(0, 2))
+            lnk.bind('<Button-1>', on_click)
+            lnk.bind('<Button-3>', on_copy)
+            tk.Button(footer, text='复制', font=('微软雅黑', 7), relief=tk.FLAT,
+                      fg='#1F497D', bg=footer['bg'], cursor='hand2', padx=4,
+                      command=on_copy).pack(side=tk.LEFT, padx=(0, 14))
+            return lnk
+
+        import webbrowser
+        link_field('项目地址：', GITHUB_URL,
+                   lambda v: webbrowser.open(v), '点击打开')
+        link_field('联系邮箱：', AUTHOR_EMAIL,
+                   lambda v: os.startfile('mailto:' + v), '点击发邮件')
+        tk.Label(footer, text='（点击打开，右键或「复制」按钮复制）',
+                 font=('微软雅黑', 7), fg='#999999').pack(side=tk.LEFT)
 
     # ------------------------------------------------------------ 工具
 
