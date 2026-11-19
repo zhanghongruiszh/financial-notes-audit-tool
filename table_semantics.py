@@ -170,6 +170,7 @@ class TableModel:
     chapter: str
     sub_item: str
     ref: object                    # docx_ir / notes_parser.TableRef
+    sub_no: str = ''               # Word 里的编号，如「六、3」
     header_rows: int = 0
     title_rows: List[int] = field(default_factory=list)
     columns: List[Column] = field(default_factory=list)
@@ -436,7 +437,7 @@ def classify_rows(grid, header_rows):
 
 # ---------------------------------------------------------------- 单表
 
-def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
+def analyze_table(table_ref, ctx, chapter_name='', sub_item='', chapter_num='', sub_num=''):
     grid = table_ref.grid
     title_rows, header_rows = detect_header_rows(grid)
     columns = build_columns(grid, header_rows)
@@ -520,6 +521,7 @@ def analyze_table(table_ref, ctx, chapter_name='', sub_item=''):
     return TableModel(
         chapter=chapter_name,
         sub_item=sub_item,
+        sub_no=(f'{chapter_num}、{sub_num}' if chapter_num and sub_num else ''),
         ref=table_ref,
         header_rows=header_rows,
         title_rows=title_rows,
@@ -554,7 +556,9 @@ def analyze_document(doc_model, hint=None, stats=None):
         ctx = build_chapter_context(doc_model, ch)
         for sub in ch.sub_items:
             for n, t in enumerate(sub.tables, 1):
-                tm = analyze_table(t, ctx, ch.name, sub.name)
+                tm = analyze_table(t, ctx, ch.name, sub.name,
+                                   getattr(ch, 'number', '') or '',
+                                   getattr(sub, 'number', '') or '')
                 if hint is not None:
                     _apply_template_hint(tm, hint, ch.name, sub.name, n, stats)
                 out.append(_finish_table(tm))

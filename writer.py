@@ -130,16 +130,36 @@ def _write_right_headers(ws, row, periods, report_map, tb_map, has_tb):
 
 # ---------------------------------------------------------------- 底稿
 
+def _cn_number(text):
+    """把「6、1」这种编号转成「六、1」，跟 Word/报表的写法一致。"""
+    if not text:
+        return ''
+    table = {'1': '一', '2': '二', '3': '三', '4': '四', '5': '五',
+             '6': '六', '7': '七', '8': '八', '9': '九', '10': '十',
+             '11': '十一', '12': '十二', '13': '十三', '14': '十四',
+             '15': '十五', '16': '十六', '17': '十七', '18': '十八',
+             '19': '十九', '20': '二十'}
+    head, _, rest = text.partition('、')
+    return f'{table.get(head, head)}、{rest}' if rest else table.get(head, head)
+
+
 def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                  global_rows, report_by_row, tb_by_row, report_map, tb_map, raw=None,
-                 check_rows=None, anomalies=None):
+                 check_rows=None, anomalies=None, show_title=True):
     grid = tm.ref.grid
 
-    # 科目名放在第一格（与 Word 里的标题一致、显眼），技术信息放右边小字
+    # 第一列放 Word 里的编号（如「六、3」），后面跟科目名；
+    # 同一个子项目的后续子表不再重复挂标题，免得看花眼
     title_row = row_ptr
-    title_cell = ws.cell(row_ptr, 1, tm.sub_item)
-    title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
-    title_cell.fill = FILL_TABLE_TITLE
+    num = _cn_number(getattr(tm, 'sub_no', '') or '')
+    if show_title:
+        label = f'{num}　{tm.sub_item}' if num else tm.sub_item
+        title_cell = ws.cell(row_ptr, 1, label)
+        title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+        title_cell.fill = FILL_TABLE_TITLE
+    else:
+        title_cell = ws.cell(row_ptr, 1, '')
+        title_cell.fill = FILL_TABLE_TITLE
     info_cell = ws.cell(row_ptr, max(3, tm.ref.cols),
                         f'表#{tm.ref.idx}　{tm.ref.rows}行×{tm.ref.cols}列　'
                         f'{tm.table_type_name or "未分类"}')
@@ -348,16 +368,15 @@ def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
     cell.number_format = fmt
     cell.border = BORDER
     # 公式格一律浅绿：一眼能看出"这里做了公式勾稽"
-    cell.fill = FILL_PASS
-    if res.status == 'unclear':
-        stats['unclear'] += 1
-        cell.font = Font(name='微软雅黑', size=9, color='B25E00')
-    elif res.status == 'pass':
-        stats['pass'] += 1
-        cell.font = Font(name='微软雅黑', size=9, color='375623')
-    else:
+    if res.status == 'fail':
+        cell.fill = FILL_FAIL_TARGET      # 报错整格标红
         stats['fail'] += 1
-        cell.font = Font(name='微软雅黑', size=9, bold=True, color='C00000')
+    elif res.status == 'unclear':
+        cell.fill = FILL_UNKNOWN
+        stats['unclear'] += 1
+    else:
+        cell.fill = FILL_PASS             # 做了公式的格子浅绿
+        stats['pass'] += 1
 
 
 def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx):
@@ -427,9 +446,8 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
         target_cell.fill = FILL_PASS
         stats['pass'] += 1
     else:
-        # 有差异：公式格仍是绿的（表示"这里做了公式"），数字用红字标出
-        target_cell.fill = FILL_PASS
-        target_cell.font = Font(name='Consolas', size=9, bold=True, color='C00000')
+        # 有差异：整格标红
+        target_cell.fill = FILL_FAIL_TARGET
         for c in range(1, item.target_col + 1):
             ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
         stats['fail'] += 1
@@ -700,24 +718,24 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
             ('子项目合计', len(model.sub_items)),
             ('表格总数', len(tables))]
     for k, v in rows:
-        ws.cell(r, 1, k).font = F_BODY
-        ws.cell(r, 2, v).font = F_BODY
+        ws.cell(r, 2, k).font = F_BODY
+        ws.cell(r, 3, v).font = F_BODY
         r += 1
 
     def group(name, total, ok, bad, other=None, other_label='待确认'):
         nonlocal r
-        ws.cell(r, 1, name).font = F_BODY
-        ws.cell(r, 2, total).font = F_BODY
-        ws.cell(r, 3, f'平 {ok}').font = F_BODY
-        bad_cell = ws.cell(r, 4, f'有差异 {bad}')
+        ws.cell(r, 2, name).font = F_BODY
+        ws.cell(r, 3, total).font = F_BODY
+        ws.cell(r, 4, f'平 {ok}').font = F_BODY
+        bad_cell = ws.cell(r, 5, f'有差异 {bad}')
         bad_cell.font = Font(name='微软雅黑', size=9, bold=True,
                              color='9C0006' if bad else '000000')
         if other is not None:
-            ws.cell(r, 5, f'{other_label} {other}').font = F_BODY
+            ws.cell(r, 6, f'{other_label} {other}').font = F_BODY
         r += 1
 
     r += 1
-    for i, h in enumerate(['核对类型', '条数', '结果', '', ''], 1):
+    for i, h in enumerate(['核对类型', '条数', '结果', '', ''], 2):
         c = ws.cell(r, i, h)
         if h:
             c.font = F_HEADER
@@ -726,7 +744,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
           stats['pass'] + stats['fail'] + stats['skip'] + stats['unclear'],
           stats['pass'], stats['fail'], stats['skip'], '无法计算')
     if stats['unclear']:
-        ws.cell(r, 1, '  其中结构存疑（黄色）').font = F_BODY
+        ws.cell(r, 2, '  其中结构存疑（黄色）').font = F_BODY
         ws.cell(r, 2, stats['unclear']).font = F_BODY
         ws.cell(r, 3, '认不准结构，请人工确认这些表').font = Font(
             name='微软雅黑', size=9, color='B25E00')
@@ -746,7 +764,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
           stats['nn_pass'], stats['nn_fail'], stats['nn_unmatched'])
     group('附注内跨表', stats['nx_pass'] + stats['nx_fail'] + stats['nx_unmatched'],
           stats['nx_pass'], stats['nx_fail'], stats['nx_unmatched'])
-    ws.cell(r, 1, '未披露候选（人工判断）').font = F_BODY
+    ws.cell(r, 2, '未披露候选（人工判断）').font = F_BODY
     ws.cell(r, 2, disclosure_count).font = F_BODY
     r += 2
 
@@ -1078,6 +1096,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
 
     # 右侧表头改为每张表自己写（列位置随表宽浮动，不再锁定固定列）
 
+    last_sub = None
     results_by_key = {id(r.item): r for r in results}
     checks_by_table = {}
     for item in checks:
@@ -1098,10 +1117,12 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     row_ptr = 5
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
+        is_first = last_sub != (tm.chapter, tm.sub_item)
+        last_sub = (tm.chapter, tm.sub_item)
         row_ptr, nrm = _write_table(ws, tm, checks_by_table.get(key, {}),
                                     results_by_key, row_ptr, stats, global_rows,
                                     report_by_row, tb_by_row, report_map, tb_map,
-                                    raw, check_rows, anomalies)
+                                    raw, check_rows, anomalies, show_title=is_first)
         note_rows.update(nrm)
         row_ptr += 1
 

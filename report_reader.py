@@ -310,7 +310,10 @@ def _read_sheet(ws, name):
     _rebuild_blocks(sheet, item_cols)
 
     data_start = sheet.header_row + 1
-    skip = _sub_item_rows(ws, item_cols, ws.max_row)
+    # 资产负债表的「其中：」只是明细拆分；利润表/现金流量表的
+    # 「其中：营业收入」「其中：营业成本」是正式报表项目，必须保留
+    skip = (_sub_item_rows(ws, item_cols, ws.max_row)
+            if '资产负债表' in sheet.name else set())
     for ic in item_cols:
         for r in range(data_start, ws.max_row + 1):
             if (r, ic) in skip:
