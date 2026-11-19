@@ -478,6 +478,66 @@ def _candidate_blocks(tm, total_row, ref_col):
     return cands
 
 
+
+def _rule_asset_blocks(tm, checks):
+    """固定资产/无形资产/使用权资产这类"分段式"表的纵向加减：
+
+        账面净值合计 = 账面原值合计 − 累计折旧(摊销)合计
+        账面价值合计 = 账面净值合计 − 减值准备合计
+
+    这几行都是 subtotal（不是 total），普通 V-SUM 抓不到。
+    """
+    rows = [r for r in tm.rows if r.kind in ('subtotal', 'total') and r.label]
+
+    def find(*words):
+        for r in rows:
+            if all(w in r.label for w in words):
+                return r
+        return None
+
+    gross = find('原值') or find('原价')
+    dep = find('累计折旧') or find('累计摊销')
+    net = find('净值')
+    imp = find('减值准备')
+    value = find('账面价值')
+    if not (gross and dep and value):
+        return
+
+    for c in _data_columns(tm):
+        if net is not None:
+            # 净值/价值那几行只有期初、期末有数，增加/减少列是空的 → 跳过
+            if net.kind and cell_number(tm.ref.grid, net.row, c.index + 1):
+                checks.append(CheckItem(
+                    rule_id='R-ABLK', level='hard',
+                    chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                    label=f'账面净值 = 原值 − 累计折旧（{c.header_text or "列"}）',
+                    target_row=net.row, target_col=c.index + 1,
+                    terms=[Term(+1, gross.row, c.index + 1),
+                           Term(-1, dep.row, c.index + 1)],
+                ))
+            base = net
+        else:
+            base = gross
+        if not cell_number(tm.ref.grid, value.row, c.index + 1):
+            continue
+        # 原值/折旧这两行在这一列没数，算不出账面价值，跳过
+        if not cell_number(tm.ref.grid, gross.row, c.index + 1) or \
+                not cell_number(tm.ref.grid, dep.row, c.index + 1):
+            continue
+        terms = [Term(+1, base.row, c.index + 1)]
+        if net is None:
+            terms.append(Term(-1, dep.row, c.index + 1))   # 没有净值行就多减一次
+        if imp is not None:
+            terms.append(Term(-1, imp.row, c.index + 1))
+        checks.append(CheckItem(
+            rule_id='R-ABLK', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label=f'账面价值 = 原值 − 折旧 − 减值（{c.header_text or "列"}）',
+            target_row=value.row, target_col=c.index + 1,
+            terms=terms,
+        ))
+
+
 def _rule_v_sum(tm, checks):
     """合计行 = 上方明细之和（语义候选 + 数值验证，逐列判定）。
 
@@ -1246,6 +1306,7 @@ def build_checks(tables):
         _rule_prov_move(tm, checks)
         _rule_ecl(tm, checks)
         _rule_sum_down(tm, checks)
+        _rule_asset_blocks(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
 

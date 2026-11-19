@@ -46,10 +46,31 @@ class CrossCheck:
 
 
 def _total_row_of(tm):
-    for r in tm.rows:
-        if r.kind == 'total':
+    """取代表总额的行：**优先「合计」，其次「小计」**。
+
+    长期股权投资这类表里既有「小计」（分公司/联营各一段），也有「合计」，
+    先拿小计会少算一半。
+    """
+    # 固定资产/无形资产这类表用「小计」而不是「合计」，
+    # 并且有「账面原值合计 / 累计折旧合计 / 减值准备合计 / 账面价值合计」多段，
+    # 对外披露的是**账面价值合计**。
+    aggs = [r for r in tm.rows
+            if r.kind in ('total', 'subtotal') and
+            ('合计' in (r.label or '') or '总计' in (r.label or '')
+             or '小计' in (r.label or ''))]
+    if not aggs:
+        return None
+    for r in aggs:
+        if '账面价值' in (r.label or ''):
             return r
-    return None
+    for r in aggs:
+        label = (r.label or '')
+        if ('合计' in label or '总计' in label) and '净值' not in label:
+            return r
+    for r in aggs:
+        if '小计' not in (r.label or ''):
+            return r
+    return aggs[-1]
 
 
 def _pick_main_table(tables, names=None):
@@ -59,7 +80,16 @@ def _pick_main_table(tables, names=None):
     变动明细等）。所以按文档顺序取第一张合格的，而不是按列数打分——
     否则应收账款会拿到「组合计提」那种分表，金额口径就错了。
     """
-    # 第一轮：有「合计」行且期间可定位
+    # 第一轮：有**「合计」**行且期间可定位（子项目下第一张这种表就是主表）
+    for tm in tables:
+        # 用统一的取行函数：它会优先挑「账面价值合计」，
+        # 而不是「账面原值合计」那一段
+        tot = _total_row_of(tm)
+        if tot is None:
+            continue
+        if any(c.period for c in tm.columns if c.is_data):
+            return tm, tot
+    # 第一轮补：只有「小计」的也算
     for tm in tables:
         tot = _total_row_of(tm)
         if tot is None:

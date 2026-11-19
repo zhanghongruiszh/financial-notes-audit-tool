@@ -457,11 +457,11 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                 periods.append(d)
     periods = sorted(periods, reverse=True)[:2]
 
-    headers = ['序号', '财务报表', '报表项目', '附注编号', '附注科目']
+    headers = ['序号', '报表项目', '附注编号', '附注科目']
     for d in periods:
         headers += [f'报表数 {d}', f'附注数 {d}', f'差额 {d}']
     headers += ['是否勾稽', '是否一致', '定位']
-    col_flag = 5 + len(periods) * 3 + 1
+    col_flag = 4 + len(periods) * 3 + 1
     col_state = col_flag + 1
     col_link = col_state + 1
 
@@ -484,8 +484,7 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
             by_period = {c.period: c for c in checks}
             nc = note_no.get((sheet.name, _rr.normalize_name(name)))
 
-            seq += 1
-            vals = [seq, sheet.name, name,
+            vals = [0, name,
                     (nc.actual if nc else ''),
                     (checks[0].sub_item if checks else '')]
             any_amount = False
@@ -517,16 +516,17 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
             else:
                 flag, state = ('未勾稽', '') if any_amount else ('—（无金额）', '')
             if not any_amount and not checks:
-                # 本来就没金额：金额列留空，别显示一串 0
-                for i in range(6, col_flag):
-                    vals[i - 1] = None
+                # 报表和附注都是 0/空：不显示这一行
+                continue
+            seq += 1
+            vals[0] = seq
             vals += [flag, state, '']
 
             for i, v in enumerate(vals, 1):
                 cell = ws.cell(r, i, v)
                 cell.font = F_BODY
                 cell.border = BORDER
-                if 6 <= i < col_flag and isinstance(v, (int, float)):
+                if 5 <= i < col_flag and isinstance(v, (int, float)):
                     cell.number_format = FMT_AMOUNT
             color = {'一致': FILL_PASS, '有差异': FILL_FAIL_TARGET,
                      '待确认': FILL_UNKNOWN}.get(state)
