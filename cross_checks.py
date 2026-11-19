@@ -419,6 +419,33 @@ def fill_missing_checks(model, tables, report, out, get_value=None,
     return out
 
 
+def _report_periods(report):
+    """报表里出现过的期间，从大到小。
+
+    用户给的规律：**大的那个必然是本期，小的是上期**，
+    所以报表自己就能定出本期/上期，不依赖任何写死的年份。
+    """
+    periods = set()
+    for sheet in getattr(report, 'sheets', []):
+        for cols in (sheet.blocks or {}).values():
+            for _c, p in cols.items():
+                if p:
+                    periods.add(p)
+    return sorted(periods, reverse=True)
+
+
+def _fallback_period(col, order):
+    """附注表头没解析出日期时，按文字（本期/上期、期末/期初）挂到报表期间上。"""
+    if col.period or not order:
+        return None
+    text = (col.header_text or '') + (col.period_key or '')
+    if any(w in text for w in ('本期', '本年', '期末', '年末')):
+        return order[0]
+    if any(w in text for w in ('上期', '上年', '期初', '年初')):
+        return order[1] if len(order) > 1 else None
+    return None
+
+
 def build_cross_checks(model, tables, report, get_value=None):
     by_sub = {}
     for tm in tables:
@@ -505,9 +532,14 @@ def build_cross_checks(model, tables, report, get_value=None):
                             pass
                     tot = guessed
 
+            order = _report_periods(report)
             per_period = {}
             for col in tm.columns:
-                if not col.is_data or not col.period:
+                if not col.is_data:
+                    continue
+                if not col.period:
+                    col.period = _fallback_period(col, order)
+                if not col.period:
                     continue
                 if not _col_ok(col):
                     continue
