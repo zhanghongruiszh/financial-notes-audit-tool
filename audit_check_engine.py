@@ -18,6 +18,53 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 
+
+class LayoutMismatchError(ValueError):
+    """附注底稿的行结构与引擎预期的固定版式不一致。
+
+    本引擎早期版本把每个附注项目的行号写死（如「预付款项」锁定在第 105 行）。
+    一旦 check.xlsx 不是按那份版式生成的（例如旧版提取器漏掉全部表格内容），
+    下游就会以 KeyError 的形式崩掉。这里改成提前拦截，给出能看懂的提示。
+    """
+
+
+def _validate_source_layout(src_ws, statement_links, src_notes_file):
+    """开跑前校验源底稿行数是否覆盖所有写死的行号锚点。"""
+    max_row = src_ws.max_row
+    required = []          # [(anchor_row, 用途说明)]
+    for anchor, info in statement_links.items():
+        required.append((anchor, f"{info.get('sec', '')} 的合计数"))
+        for extra in info.get('custom_rows', []) or []:
+            required.append((extra, f"{info.get('sec', '')} 的明细行"))
+
+    missing = sorted({r for r, _ in required if not (1 <= r <= max_row)})
+    if not missing:
+        return
+
+    # 把缺失锚点和最近的科目说明配起来，提示才有用
+    detail = []
+    for r in missing[:5]:
+        note = next((why for row, why in required if row == r), '')
+        detail.append(f"  需要第 {r} 行（{note}）")
+    more = f"\n  …… 另有 {len(missing) - 5} 个行号同样找不到" if len(missing) > 5 else ''
+
+    raise LayoutMismatchError(
+        "附注底稿的行结构与本引擎预期的固定版式不一致，无法继续。\n\n"
+        f"底稿文件：{os.path.basename(str(src_notes_file))}\n"
+        f"实际行数：{max_row} 行；引擎需要到第 {max(required)[0]} 行。\n\n"
+        "缺失的行号锚点：\n" + '\n'.join(detail) + more + "\n\n"
+        "常见原因：\n"
+        "  1. 这份 check.xlsx 不是从当前 Word 附注完整提取的。旧版提取器\n"
+        "     (word_to_excel_extractor) 只写段落、不写表格，金额会全部丢失，\n"
+        "     底稿只剩几十行标题，必然对不上。\n"
+        "  2. 附注内容有增删，行数发生变化。\n\n"
+        "处理办法：\n"
+        "  - 若手上有该项目的旧版完整底稿（例如 old铁联化轻/check.xlsx），先用它；\n"
+        "  - 或用 word_to_excel_extractor.py 重新提取后，再跑新引擎（新引擎按\n"
+        "    科目名定位，不再依赖固定行号）。"
+    )
+
+
 def build_full_system(target_dir='.', forced_version=None):
     print(f"=== 启动全套附注勾稽核对引擎 [目标目录: {target_dir}] ===")
     
@@ -209,6 +256,11 @@ def build_full_system(target_dir='.', forced_version=None):
     for r in range(1, src_ws.max_row + 1):
         vals = [src_ws.cell(r, c).value for c in range(1, src_ws.max_column + 1)]
         orig_rows.append((r, vals))
+
+    # ---------------------------------------------------------------
+    # 版式校验：提前拦截，别让下游甩一个 KeyError: 105 出来
+    # ---------------------------------------------------------------
+    _validate_source_layout(src_ws, statement_links, src_notes_file)
 
     orig_to_dst = {}
     dst_r = 1

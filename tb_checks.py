@@ -1,0 +1,146 @@
+# -*- coding: utf-8 -*-
+"""
+tb_checks.py — 附注「现金流量表补充资料」与 TB 现金流量表的逐项核对。
+
+为什么单独做
+------------
+对外三张报表只列现金流量表的合计数，附注补充资料里的间接法调节项、
+现金及现金等价物构成等，报表上没有完整对应项目，必须回 TB 底稿取数。
+"""
+
+import datetime
+from dataclasses import dataclass
+from typing import Optional
+
+import openpyxl
+
+import rules
+import tb_reader
+
+# 附注用词 与 TB 用词的差异（只补常见几组，其余靠"包含匹配"）
+ALIAS = {
+    '信用减值损失': ['信用减值准备', '信用减值损失'],
+    '资产减值准备': ['资产减值准备', '资产减值损失'],
+    '投资性房地产折旧': ['投资性房地产折旧'],
+}
+
+# 说明行/汇总行不参与逐项核对（它们由 ①②③ 分节标题带过）
+SKIP_LABELS = ('将净利润调节为经营活动现金流量', '不涉及现金收支的重大投资和筹资活动',
+               '现金及现金等价物净变动情况')
+
+
+@dataclass
+class TbCheck:
+    chapter: str
+    sub_item: str
+    table_idx: int
+    label: str
+    period: Optional[datetime.date]
+    note_value: Optional[float]
+    note_ref: str = ''
+    tb_sheet: str = ''
+    tb_rows: Optional[int] = None
+    tb_cols: Optional[int] = None
+    tb_value: Optional[float] = None
+    diff: Optional[float] = None
+    status: str = 'unmatched'      # pass / fail / unmatched
+    note: str = ''
+
+
+def _is_cf_subitem(name):
+    return '现金流量表' in (name or '')
+
+
+def _candidates(label):
+    """给一个附注行文字，返回可尝试匹配的名字列表。"""
+    out = [label]
+    for key, alts in ALIAS.items():
+        if key in label:
+            out.extend(alts)
+    return out
+
+
+def build_tb_checks(model, tables, tb_sheets):
+    cf = tb_reader.find_cf(tb_sheets, prefer='indirect')
+    if cf is None:
+        return []
+
+    out = []
+    for tm in tables:
+        if not _is_cf_subitem(tm.sub_item):
+            continue
+        for row in tm.rows:
+            if row.kind != 'detail' or not row.label:
+                continue
+            if any(k in row.label for k in SKIP_LABELS):
+                continue
+            for col in tm.columns:
+                if not col.is_data or not col.period:
+                    continue
+                note_val = rules.cell_number(tm.ref.grid, row.row, col.index + 1)
+                if note_val is None:
+                    continue
+
+                chk = TbCheck(
+                    chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                    label=row.label, period=col.period, note_value=note_val,
+                    note_ref=f'表#{tm.ref.idx} R{row.row} C{col.index + 1}',
+                )
+
+                tb_row = None
+                for cand in _candidates(row.label):
+                    tb_row = tb_reader.find_item(cf, cand)
+                    if tb_row:
+                        break
+                if not tb_row:
+                    chk.status = 'unmatched'
+                    chk.note = 'TB 现金流量表里没找到同名项目'
+                    out.append(chk)
+                    continue
+
+                tb_col = cf.value_col(col.period)
+                chk.tb_sheet = cf.name
+                chk.tb_rows = tb_row
+                if tb_col is None:
+                    chk.status = 'unmatched'
+                    chk.note = f'TB 里没有 {col.period} 这一期'
+                    out.append(chk)
+                    continue
+                chk.tb_cols = tb_col
+                out.append(chk)
+    return out
+
+
+def _to_number(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if v is None:
+        return 0.0
+    s = str(v).strip().replace(',', '')
+    if s in ('', '-', '--', '—', '——', '–', '/'):
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def evaluate(checks, tb_xlsx_path):
+    """用 TB 工作簿里的实际值填充并判定。"""
+    wb = openpyxl.load_workbook(tb_xlsx_path, data_only=True)
+    for chk in checks:
+        if not (chk.tb_sheet and chk.tb_rows and chk.tb_cols):
+            continue
+        if chk.tb_sheet not in wb.sheetnames:
+            continue
+        raw = wb[chk.tb_sheet].cell(chk.tb_rows, chk.tb_cols).value
+        chk.tb_value = _to_number(raw)
+        if chk.tb_value is None:
+            chk.status = 'unmatched'
+            chk.note = f'TB 取数不是数字：{raw!r}'
+            continue
+        chk.diff = chk.note_value - chk.tb_value
+        chk.status = 'pass' if abs(chk.diff) <= rules.TOLERANCE else 'fail'
+    return checks
