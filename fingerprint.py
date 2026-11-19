@@ -115,14 +115,17 @@ def _capture_sum_groups(tm):
 
 def capture(model, tables, project=''):
     """整个项目的指纹。"""
+    chapters = []
+    if model is not None:
+        chapters = [
+            {'number': c.number, 'name': c.name, 'scope': c.scope,
+             'sub_items': [s.name for s in c.sub_items]}
+            for c in getattr(model, 'chapters', [])
+        ]
     return {
         'version': VERSION,
         'project': project or os.path.basename(getattr(model, 'path', '') or ''),
-        'chapters': [
-            {'number': c.number, 'name': c.name, 'scope': c.scope,
-             'sub_items': [s.name for s in c.sub_items]}
-            for c in model.chapters
-        ],
+        'chapters': chapters,
         'tables': [capture_table(t) for t in tables],
     }
 

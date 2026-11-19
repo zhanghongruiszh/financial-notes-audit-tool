@@ -50,7 +50,7 @@ def _co_init():
 class AuditCheckApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('财务报表附注自动化勾稽系统 v3.0')
+        self.title('财务报表附注自动化勾稽系统 v3.0　【测试版】')
         self.geometry('980x720')
         self.minsize(900, 640)
         self.last_out_dir = None
@@ -89,7 +89,7 @@ class AuditCheckApp(tk.Tk):
         main = ttk.Frame(self, padding='15 12 15 10')
         main.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(main, text='财务报表附注自动化勾稽系统',
+        tk.Label(main, text='财务报表附注自动化勾稽系统　【测试版】',
                  font=('微软雅黑', 14, 'bold'), fg='#1F497D').pack(anchor=tk.W)
 
         grp_files = ttk.LabelFrame(main, text=' 提交原始文件 ', padding='12 10 12 10')
@@ -134,8 +134,11 @@ class AuditCheckApp(tk.Tk):
             row=1, column=3, sticky=tk.W, pady=5)
         grp_cfg.columnconfigure(1, weight=1)
 
+        # 按钮分两行：主操作一行，辅助功能一行，避免挤在一起
         btn_frame = ttk.Frame(main)
-        btn_frame.pack(fill=tk.X, pady=(0, 10))
+        btn_frame.pack(fill=tk.X, pady=(0, 4))
+        btn_row2 = ttk.Frame(main)
+        btn_row2.pack(fill=tk.X, pady=(0, 10))
 
         self.btn_run = tk.Button(
             btn_frame, text='开始自动化全面勾稽', font=('微软雅黑', 10, 'bold'),
@@ -144,40 +147,27 @@ class AuditCheckApp(tk.Tk):
             padx=14, pady=7, command=self.on_run)
         self.btn_run.pack(side=tk.LEFT, padx=(0, 10))
 
-        tk.Button(btn_frame, text='Word附注编号体检与修复', font=('微软雅黑', 9),
-                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
-                  command=self.on_fix_numbering).pack(side=tk.LEFT, padx=(0, 10))
+        def _btn(parent, text, command, bg='#EBF1F5', fg='#1F497D'):
+            return tk.Button(parent, text=text, font=('微软雅黑', 9),
+                             bg=bg, fg=fg, cursor='hand2', padx=10, pady=6,
+                             command=command)
 
-        tk.Button(btn_frame, text='报表附注号一键修复与补全', font=('微软雅黑', 9),
-                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
-                  command=self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
+        _btn(btn_frame, 'Word附注编号体检与修复',
+             self.on_fix_numbering).pack(side=tk.LEFT, padx=(0, 10))
+        _btn(btn_frame, '报表附注号一键修复与补全',
+             self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
+        _btn(btn_frame, '转换 docx/xlsx',
+             self.on_convert).pack(side=tk.LEFT, padx=(0, 10))
+        _btn(btn_frame, '打开输出文件夹',
+             self.open_out_dir).pack(side=tk.RIGHT)
 
-        tk.Button(btn_frame, text='导出结构指纹', font=('微软雅黑', 9),
-                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
-                  command=self.on_export_fingerprint).pack(side=tk.LEFT, padx=(0, 10))
-
-        tk.Button(btn_frame, text='转换 docx/xlsx', font=('微软雅黑', 9),
-                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
-                  command=self.on_convert).pack(side=tk.LEFT, padx=(0, 10))
-
-        tk.Button(btn_frame, text='模板库', font=('微软雅黑', 9),
-                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
-                  command=self.on_manage_templates).pack(side=tk.LEFT, padx=(0, 10))
-
-        tk.Button(btn_frame, text='打开输出文件夹', font=('微软雅黑', 9),
-                  bg='#F2F2F2', fg='#333333', cursor='hand2', padx=10, pady=6,
-                  command=self.open_out_dir).pack(side=tk.RIGHT)
-
-        # 页脚：先于日志区 pack 且贴底部，保证窗口再小也不会被挤出视野
-        footer = ttk.Frame(main)
-        footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
-        tk.Label(footer, text='开源项目地址：', font=('微软雅黑', 8)).pack(side=tk.LEFT)
-        link = tk.Label(footer, text=GITHUB_URL, font=('微软雅黑', 8, 'underline'),
-                        fg='#0969DA', cursor='hand2')
-        link.pack(side=tk.LEFT)
-        link.bind('<Button-1>', lambda e: webbrowser.open_new_tab(GITHUB_URL))
-        tk.Label(footer, text=f'问题反馈邮箱：{AUTHOR_EMAIL}',
-                 font=('微软雅黑', 8), fg='#1F497D').pack(side=tk.RIGHT)
+        _btn(btn_row2, '模板库', self.on_manage_templates).pack(side=tk.LEFT, padx=(0, 10))
+        _btn(btn_row2, '导出结构指纹', self.on_export_fingerprint).pack(
+            side=tk.LEFT, padx=(0, 10))
+        _btn(btn_row2, '导出测试包', self.on_export_diagnostic,
+             bg='#FFF2CC', fg='#B25E00').pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(btn_row2, text='（测试版：遇到报错或大量表认不出，点「导出测试包」发回）',
+                 font=('微软雅黑', 8), fg='#B25E00').pack(side=tk.LEFT, padx=(6, 0))
 
         grp_log = ttk.LabelFrame(main, text=' 执行日志 ', padding='10 8 10 8')
         grp_log.pack(fill=tk.BOTH, expand=True)
@@ -308,6 +298,47 @@ class AuditCheckApp(tk.Tk):
                 messagebox.showerror('勾稽失败', f'{exc}')
             finally:
                 self.btn_run.config(state=tk.NORMAL, text='开始自动化全面勾稽')
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ 测试包
+
+    def on_export_diagnostic(self):
+        """把日志、结构识别结果、输入文件打成一个压缩包，便于反馈问题。"""
+        notes = self.var_notes.get().strip()
+        report = self.var_report.get().strip()
+        tb = self.var_tb.get().strip()
+        if not notes:
+            messagebox.showwarning('提示', '请先选择报告附注文件（至少要能被程序打开）。')
+            return
+        self.btn_run.config(state=tk.DISABLED, text='打包中...')
+        self.log('\n' + '=' * 60)
+        self.log('[测试包] 正在收集信息 ...')
+
+        def work():
+            _co_init()
+            try:
+                import diagnostics
+                project = self.var_project.get().strip()
+                if not project:
+                    import pipeline
+                    project = pipeline.infer_project_name(report or notes, notes, tb)
+                target_dir = os.path.dirname(notes) or os.path.abspath('.')
+                out = os.path.join(target_dir, (project or '项目') + '_测试包.zip')
+                log_text = self.txt_log.get('1.0', 'end')
+                path = diagnostics.build(notes, report, tb, log_text, out, project)
+                self.log(f'[测试包] 已生成：{path}')
+                self.after(0, lambda: messagebox.showinfo(
+                    '打包完成',
+                    f'测试包已生成：\n{path}\n\n'
+                    f'里面含日志、结构报告、指纹和三个输入文件。\n'
+                    f'输入文件含业务数据，发送前请自行判断。'))
+            except Exception as exc:
+                self.log('[测试包] 失败：' + str(exc))
+                self.after(0, lambda: messagebox.showerror('打包失败', str(exc)))
+            finally:
+                self.after(0, lambda: self.btn_run.config(
+                    state=tk.NORMAL, text='开始自动化全面勾稽'))
 
         threading.Thread(target=work, daemon=True).start()
 
