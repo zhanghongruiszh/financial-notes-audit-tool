@@ -150,9 +150,11 @@ def _dump_table(tbl, tidx):
             is_cont = vmerge == 'continue'
             text = '' if is_cont else _qc(tc)
 
-            row.append({'t': text, 'm': 'v' if is_cont else ' '})
+            # 把真实的合并跨度记下来：后面还原表头必须靠它，
+            # 只靠 'h' 标记按位置推断会错位（Word 里合并格起点常偏一格）
+            row.append({'t': text, 'm': 'v' if is_cont else ' ', 'span': span})
             for _k in range(1, span):
-                row.append({'t': '', 'm': 'x' if is_cont else 'h'})
+                row.append({'t': '', 'm': 'x' if is_cont else 'h', 'span': 0})
             col += span
 
         if n_cols < len(row):
