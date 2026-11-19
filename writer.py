@@ -671,6 +671,9 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
             if not any_amount and not checks:
                 # 报表和附注都是 0/空：不显示这一行
                 continue
+            # 勾稽正常的不在汇总表占行——这里只列"要人看的"
+            if state not in ('有差异', '待确认') and flag != '未勾稽':
+                continue
             seq += 1
             vals[0] = seq
             vals += [flag, state, '']
@@ -711,8 +714,8 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                         ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
             r += 1
 
-    ws.cell(r, 1, f'小计：报表项目 {seq} 个，已勾稽 {n} 个'
-                  f'（一致 {ok}，有差异 {bad}）').font = F_HEADER
+    ws.cell(r, 1, f'小计：共勾稽 {n + ok} 项，其中一致 {ok}、有差异 {bad}；'
+                  f'下方只列需要关注的 {seq} 项').font = F_HEADER
     r += 2
     return r
 

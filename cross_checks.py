@@ -296,6 +296,87 @@ def _row_by_value(tm, current, sheet, item_row, item_col, get_value):
     return None
 
 
+def fill_missing_checks(model, tables, report, out, get_value=None):
+    """给"还没挂上勾稽"的报表项目补勾稽。
+
+    判定方式：在附注表里找一行，其金额与该报表项目相等（±0.01），
+    并且行名/所在子项目名与项目名相关。这样一对多的科目
+    （营业收入&营业成本、三项费用、财务费用的其中项）也能各自挂上。
+    """
+    if get_value is None:
+        return out
+    claimed = {(c.sheet, c.rows, c.cols) for c in out if c.sheet}
+    try:
+        import report_numbering as rn
+    except Exception:
+        rn = None
+
+    for sheet in report.sheets:
+        val_cols = {}
+        for item_col, cols in (sheet.blocks or {}).items():
+            for col, period in cols.items():
+                val_cols.setdefault(period, col)
+        if not val_cols:
+            continue
+        for name, (row, item_col) in sheet.items.items():
+            if rn is not None and rn.is_no_note_item(name):
+                continue
+            # 现金流量表只有"经营活动产生的现金流量净额"和附注勾，
+            # 其余子项走 TB 核对，不在这里补配
+            if sheet.name.startswith('现金流量表') and \
+                    '经营活动产生的现金流量净额' not in name:
+                continue
+            cols = (sheet.blocks or {}).get(item_col) or {}
+            if not cols:
+                continue
+            # 报表该项目各期的金额
+            targets = {}
+            for col, period in cols.items():
+                v = get_value(sheet.name, row, col)
+                if v:
+                    targets[period] = v
+            if not targets:
+                continue
+            if all((sheet.name, row, c) in claimed for c in cols):
+                continue
+
+            for tm in tables:
+                rel = (name in tm.sub_item) or any(
+                    name in (r.label or '') for r in tm.rows)
+                if not rel:
+                    continue
+                for r in tm.rows:
+                    if r.kind not in ('detail', 'subtotal', 'total') or not r.label:
+                        continue
+                    label = (r.label or '')
+                    if name not in label and name not in tm.sub_item:
+                        continue
+                    for period, tval in targets.items():
+                        nc = _note_col_of(tm, period)
+                        if nc is None:
+                            continue
+                        nv = rules.cell_number(tm.ref.grid, r.row, nc)
+                        if nv is None or abs(nv - tval) > 0.01:
+                            continue
+                        rcol = cols.get(None) or None
+                        # 找到报表中该期间的列
+                        rcol = next((c for c, pp in cols.items() if pp == period), None)
+                        if rcol is None:
+                            continue
+                        key = (sheet.name, row, rcol)
+                        if key in claimed:
+                            continue
+                        claimed.add(key)
+                        out.append(CrossCheck(
+                            chapter=tm.chapter, scope=sheet.scope if hasattr(sheet, 'scope') else '',
+                            sub_item=tm.sub_item, name=name, period=period,
+                            period_key=None, note_value=nv, note_ref='',
+                            sheet=sheet.name, rows=row, cols=rcol,
+                            note_table=tm.ref.idx, note_row=r.row, note_col=nc,
+                            note_terms=[(r.row, nc, 1)], basis='补配'))
+    return out
+
+
 def build_cross_checks(model, tables, report, get_value=None):
     by_sub = {}
     for tm in tables:

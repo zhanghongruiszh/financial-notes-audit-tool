@@ -206,6 +206,9 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
 
     cross = cross_checks.build_cross_checks(
         model, tables, report, get_value=_get_value)
+    # 一对多的科目（收入&成本、三项费用、费用其中项）在这里补挂
+    cross = cross_checks.fill_missing_checks(
+        model, tables, report, cross, get_value=_get_value)
     report_values = {}
     for cc in cross:
         if cc.sheet and cc.rows and cc.cols and cc.sheet in wb_src.sheetnames:
