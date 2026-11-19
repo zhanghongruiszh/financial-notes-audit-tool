@@ -41,8 +41,10 @@ RE_TOP5_WORDS = ('有限公司', '股份', '集团', '公司')
 
 
 def _row_labels(tm):
+    # 注意要带上 section：固定资产那种「① 账面原值 / ② 累计折旧」是分块标题行，
+    # 类型判断恰恰靠它们。
     return [r.label for r in tm.rows
-            if r.kind in ('detail', 'group', 'subtotal') and r.label]
+            if r.kind in ('section', 'detail', 'group', 'subtotal') and r.label]
 
 
 def _roles(tm):

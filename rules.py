@@ -692,6 +692,186 @@ def _rule_pct(tm, checks, siblings=None):
 
 # ---------------------------------------------------------------- 入口
 
+# ---------------------------------------------------------------- 特殊表结构
+
+# 固定资产/无形资产这类"分块变动表"的块标题
+BLOCK_KEYWORDS = (
+    ('原值', ('账面原值', '原值')),
+    ('折旧', ('累计折旧', '累计摊销', '折旧')),
+    ('减值', ('减值准备', '减值')),
+    ('价值', ('账面价值',)),
+)
+
+
+def _find_blocks(tm):
+    """把行按「① 账面原值 / ② 累计折旧 / ③ 减值准备 / ④ 账面价值」分块。
+
+    返回 [(块类型, [RowInfo...]), ...]，块内不含块标题行。
+    """
+    rows = [r for r in tm.rows if r.row]
+    marks = []
+    for r in rows:
+        if r.kind != 'section' or not r.label:
+            continue
+        for kind, words in BLOCK_KEYWORDS:
+            if any(w in r.label for w in words):
+                marks.append((r.row, kind))
+                break
+
+    blocks = []
+    for i, (start, kind) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else 10 ** 6
+        body = [r for r in rows if start < r.row < end]
+        if body:
+            blocks.append((kind, body))
+    return blocks
+
+
+def _rule_block_move(tm, checks):
+    """固定资产 / 无形资产 的四块式变动表。
+
+    ① 账面原值  期初 + 本期增加 − 本期减少 = 期末
+    ② 累计折旧  同上
+    ③ 减值准备  同上
+    ④ 账面价值  期末价值 = 原值期末 − 折旧期末 − 减值期末（期初同理）
+
+    这些关系是靠"块标题 + 增加/减少行"定位的，不依赖具体科目名。
+    """
+    blocks = _find_blocks(tm)
+    kinds = {k: body for k, body in blocks}
+    if not kinds:
+        return
+
+    data_cols = _data_columns(tm)
+    if not data_cols:
+        return
+
+    def pick(body, *words):
+        for r in body:
+            if r.label and all(w in r.label for w in words):
+                return r
+        return None
+
+    ends = {}
+    for kind in ('原值', '折旧', '减值'):
+        body = kinds.get(kind)
+        if not body or len(body) < 3:
+            continue
+        init_r = body[0]
+        end_r = body[-1]
+        inc_r = pick(body, '增加')
+        dec_r = pick(body, '减少')
+        if inc_r is None or dec_r is None:
+            continue
+        ends[kind] = (init_r, end_r, inc_r, dec_r)
+
+        for c in data_cols:
+            checks.append(CheckItem(
+                rule_id='R-BLK', level='hard',
+                chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                label=f'{kind}：期末 = 期初 + 本期增加 − 本期减少（{c.header_text or "列"}）',
+                target_row=end_r.row, target_col=c.index + 1,
+                terms=[Term(+1, init_r.row, c.index + 1),
+                       Term(+1, inc_r.row, c.index + 1),
+                       Term(-1, dec_r.row, c.index + 1)],
+            ))
+
+    # ④ 账面价值 = 原值 − 折旧 − 减值（期末对期末、期初对期初）
+    if '价值' in kinds and '原值' in ends:
+        body = kinds['价值']
+        base_init, base_end = ends['原值'][0], ends['原值'][1]
+        init_lab = (base_init.label or '').strip()
+        end_lab = (base_end.label or '').strip()
+
+        # 这里的期初期末常写成具体日期（「2026年9月30日账面价值」），
+        # 所以先按日期对齐，再退回"期末/期初"字样，最后按常见版式兜底。
+        end_v = init_v = None
+        for r in body:
+            lab = (r.label or '').strip()
+            if '期末' in lab or (end_lab and end_lab in lab):
+                end_v = end_v or r
+            elif '期初' in lab or (init_lab and init_lab in lab):
+                init_v = init_v or r
+        if end_v is None and body:
+            end_v = body[0]
+        if init_v is None and len(body) > 1:
+            init_v = body[1]
+
+        pairs = []
+        for target, idx in ((end_v, 1), (init_v, 0)):
+            if target is None or '折旧' not in ends:
+                continue
+            plus = [ends['原值'][idx]] if '原值' in ends else []
+            minus = [ends[k][idx] for k in ('折旧', '减值') if k in ends]
+            pairs.append((target, plus, minus))
+        for target, plus_rows, minus_rows in pairs:
+            for c in data_cols:
+                terms = [Term(+1, target.row, c.index + 1)]
+                for r in minus_rows:
+                    terms.append(Term(-1, r.row, c.index + 1))
+                # target 本身不进 terms，右侧是"原值 − 折旧 − 减值"
+                terms = [Term(+1, r.row, c.index + 1) for r in plus_rows] + \
+                        [Term(-1, r.row, c.index + 1) for r in minus_rows]
+                checks.append(CheckItem(
+                    rule_id='R-BLK', level='hard',
+                    chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                    label=f'账面价值 = 原值 − 折旧 − 减值（{target.label} / {c.header_text or "列"}）',
+                    target_row=target.row, target_col=c.index + 1,
+                    terms=terms,
+                ))
+
+
+def _rule_prov_move(tm, checks):
+    """坏账/减值准备的变动表：期末 = 期初 + 计提 − 收回或转回 − 转销或核销。
+
+    列名不叫"本期增加/减少"而叫"计提/收回/转销"，所以 R-MOVE 抓不到，
+    这是模板里明确写的第三种加减关系。
+    """
+    cols = _data_columns(tm)
+    if len(cols) < 3:
+        return
+
+    def col_with(*words):
+        for c in cols:
+            head = c.header_text or ''
+            if all(w in head for w in words):
+                return c
+        return None
+
+    init_c = col_with('期初')
+    end_c = col_with('期末')
+    if init_c is None or end_c is None:
+        return
+    prov_c = col_with('计提')
+    back_c = col_with('收回') or col_with('转回')
+    write_c = col_with('转销') or col_with('核销')
+    other_c = col_with('其他变动')
+    if prov_c is None and back_c is None and write_c is None:
+        return
+
+    for r in tm.rows:
+        if r.kind not in ('detail', 'subtotal') or not r.label:
+            continue
+        terms = [Term(+1, r.row, init_c.index + 1)]
+        if prov_c is not None:
+            terms.append(Term(+1, r.row, prov_c.index + 1))
+        if back_c is not None:
+            terms.append(Term(-1, r.row, back_c.index + 1))
+        if write_c is not None:
+            terms.append(Term(-1, r.row, write_c.index + 1))
+        if other_c is not None:
+            v = cell_number(tm.ref.grid, r.row, other_c.index + 1)
+            if v:
+                terms.append(Term(+1, r.row, other_c.index + 1))
+        checks.append(CheckItem(
+            rule_id='R-PROV', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label=f'期末 = 期初 + 计提 − 收回 − 转销（{r.label}）',
+            target_row=r.row, target_col=end_c.index + 1,
+            terms=terms,
+        ))
+
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
@@ -706,6 +886,8 @@ def build_checks(tables):
         _rule_h_sum(tm, checks)
         _rule_balance(tm, checks)
         _rule_move(tm, checks)
+        _rule_block_move(tm, checks)
+        _rule_prov_move(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
 
