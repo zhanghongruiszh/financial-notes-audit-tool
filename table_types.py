@@ -82,16 +82,18 @@ def classify(tm, sub_item=''):
             ('账面原值' in joined or '累计折旧' in joined or '累计摊销' in joined):
         return 'MOVEMENT', TYPE_NAMES['MOVEMENT'], 0.9
 
-    # 5. 坏账/减值计提表（余额/金额 + 比例 + 准备）
+    # 5. 前五名 / 关联方明细（特征很强：表头写债务人名称，或行大多是公司名）
+    #    必须排在「计提表」之前——前五名表也常有"坏账准备 + 占比"两列，
+    #    否则会被误判成计提表。
+    if '债务人名称' in headers or '单位名称' in headers or \
+            sum(1 for l in labels if any(w in l for w in RE_TOP5_WORDS)) >= 3:
+        return 'TOP5', TYPE_NAMES['TOP5'], 0.8
+
+    # 6. 坏账/减值计提表（余额/金额 + 比例 + 准备）
     if '准备' in roles and '比例' in roles:
         return 'PROVISION', TYPE_NAMES['PROVISION'], 0.85
     if '准备' in roles and '价值' in roles and hit('单项', '组合', '计提') >= 1:
         return 'PROVISION', TYPE_NAMES['PROVISION'], 0.8
-
-    # 6. 前五名 / 关联方明细
-    if '债务人名称' in headers or '单位名称' in headers or \
-            sum(1 for l in labels if any(w in l for w in RE_TOP5_WORDS)) >= 3:
-        return 'TOP5', TYPE_NAMES['TOP5'], 0.8
 
     # 7. 所得税调整表
     if '适用税率' in joined or ('利润总额' in joined and '调整' in joined):

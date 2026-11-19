@@ -189,6 +189,13 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     disclosure = dc_mod.build_disclosure_checks(report_use, report, model)
     log(f'      未披露候选 {len(disclosure)} 条（供人工判断）')
 
+    # 4d) 附注内部跨表 / 跨子项目（如 现金余额 vs 货币资金合计）
+    log('[4d/5] 核对附注内部跨表与上下文相关项目 ...')
+    import note_cross_checks as nx_mod
+    note_cross = nx_mod.build(model, tables)
+    if note_cross:
+        log(f'      附注内跨表 {len(note_cross)} 条：{nx_mod.summarize(note_cross)}')
+
     # 5) TB 现金流量表核对
     tb_results = []
     tb_xlsx = None
@@ -216,6 +223,7 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
                           tb_checks=tb_results or None, tb_xlsx=tb_xlsx,
                           note_no_checks=nn_results or None,
                           disclosure=disclosure,
+                          note_cross=note_cross or None,
                           source_note=used_note, log=log)
 
     # 归档导入的三个原始文件，以及（若存在）编号治理产出的两个文件

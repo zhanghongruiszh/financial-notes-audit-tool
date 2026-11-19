@@ -32,6 +32,8 @@ from typing import List, Optional
 import docx_ir
 
 TOLERANCE = 0.01
+# 比例类容差：报表比例一般保留 2 位小数，0.5 个百分点以内视为四舍五入尾差
+RATIO_TOLERANCE = 0.005
 
 # 视为"新的一段"的行标签：用于判断「其中：」子项到哪里结束
 RE_BLOCK_BREAKER = re.compile(
@@ -78,7 +80,9 @@ class CheckItem:
     label: str                  # 展示文字
     target_row: int
     target_col: int
-    terms: List[Term] = field(default_factory=list)
+    terms: List[Term] = field(default_factory=list)   # 分子（或等式右边）
+    den: List[Term] = field(default_factory=list)     # 分母；为空表示纯加减
+    is_ratio: bool = False                            # 结果按百分比显示
     period: Optional[datetime.date] = None
     period_key: Optional[str] = None
 
@@ -94,7 +98,16 @@ class CheckItem:
             if i == 0 and t.coef > 0:
                 sign = ''
             parts.append(f'{sign}R{t.row}C{t.col}')
-        return ''.join(parts)
+        expr = ''.join(parts)
+        if self.den:
+            dparts = []
+            for i, t in enumerate(self.den):
+                sign = '+' if t.coef > 0 else '−'
+                if i == 0 and t.coef > 0:
+                    sign = ''
+                dparts.append(f'{sign}R{t.row}C{t.col}')
+            expr = f'({expr})/({"".join(dparts)})'
+        return expr
 
 
 @dataclass
@@ -138,12 +151,29 @@ def evaluate(item, table_model):
         if v is None:
             return CheckResult(item, None, None, None, 'skip', '运算项里有非数字')
         total += t.coef * v
+
+    expected = total
+    if item.den:
+        den = 0.0
+        for t in item.den:
+            v = cell_number(grid, t.row, t.col)
+            if v is None:
+                return CheckResult(item, None, None, None, 'skip', '分母里有非数字')
+            den += t.coef * v
+        if abs(den) < 1e-9:
+            return CheckResult(item, None, None, None, 'skip', '分母为 0，比例无法计算')
+        expected = total / den
+
     actual = cell_number(grid, item.target_row, item.target_col)
     if actual is None:
-        return CheckResult(item, total, None, None, 'skip', '目标格不是数字')
-    diff = actual - total
-    status = 'pass' if abs(diff) <= TOLERANCE else 'fail'
-    return CheckResult(item, total, actual, diff, status)
+        return CheckResult(item, expected, None, None, 'skip', '目标格不是数字')
+    diff = actual - expected
+    tol = RATIO_TOLERANCE if item.is_ratio else TOLERANCE
+    status = 'pass' if abs(diff) <= tol else 'fail'
+    # 比例类一律按"软提示"处理：四舍五入必然有尾差
+    if item.is_ratio and item.level == 'hard':
+        item.level = 'soft'
+    return CheckResult(item, expected, actual, diff, status)
 
 
 # ---------------------------------------------------------------- 行/列工具
@@ -512,6 +542,69 @@ def _rule_move(tm, checks):
             ))
 
 
+def _rule_pct(tm, checks):
+    """比例勾稽（软提示，四舍五入必然有尾差）。
+
+    两种情形：
+      · 列名带「计提」→ 计提比例 = 坏账准备 ÷ 账面余额
+      · 其余比例列    → 占比 = 该行金额 ÷ 合计行金额
+    """
+    cols = [c for c in tm.columns if c.is_data]
+    ratio_cols = [c for c in cols if c.kind == 'ratio' or c.role == '比例']
+    if not ratio_cols:
+        return
+
+    def col_of(period, roles):
+        for c in cols:
+            if c.period != period:
+                continue
+            if c.role in roles:
+                return c
+        return None
+
+    total_rows = [r for r in tm.rows if r.kind == 'total']
+    tot = total_rows[-1] if total_rows else None
+    targets = [r for r in tm.rows if r.kind in ('detail', 'subtotal') and r.label]
+
+    for rc in ratio_cols:
+        period = rc.period
+        head = rc.header_text or ''
+        if '计提' in head:
+            prov = col_of(period, ('准备',))
+            base = col_of(period, ('余额', '金额'))
+            if not (prov and base):
+                continue
+            for r in targets:
+                checks.append(CheckItem(
+                    rule_id='R-PCT', level='soft',
+                    chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                    label=f'计提比例 = 坏账准备 ÷ 账面余额（{r.label}）',
+                    target_row=r.row, target_col=rc.index + 1,
+                    terms=[Term(+1, r.row, prov.index + 1)],
+                    den=[Term(+1, r.row, base.index + 1)],
+                    is_ratio=True, period=period, period_key=rc.period_key,
+                ))
+            continue
+
+        base = col_of(period, ('余额', '金额', '价值'))
+        if base is None or tot is None:
+            continue
+        # 前五名/关联方明细表的「占比」分母是**该项目总额**（来自另一张表），
+        # 不是本表的合计行；按本表合计算会误报，这类跳过，由跨表核对处理。
+        if getattr(tm, 'table_type', '') == 'TOP5':
+            continue
+        for r in targets:
+            checks.append(CheckItem(
+                rule_id='R-PCT', level='soft',
+                chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                label=f'占比 = 该行金额 ÷ 合计（{r.label}）',
+                target_row=r.row, target_col=rc.index + 1,
+                terms=[Term(+1, r.row, base.index + 1)],
+                den=[Term(+1, tot.row, base.index + 1)],
+                is_ratio=True, period=period, period_key=rc.period_key,
+            ))
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_checks(tables):
@@ -523,6 +616,7 @@ def build_checks(tables):
         _rule_h_sum(tm, checks)
         _rule_balance(tm, checks)
         _rule_move(tm, checks)
+        _rule_pct(tm, checks)
     return checks
 
 
