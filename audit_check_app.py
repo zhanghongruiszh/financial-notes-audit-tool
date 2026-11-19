@@ -68,6 +68,11 @@ class AuditCheckApp(tk.Tk):
             template_lib.seed_if_empty()
         except Exception:
             pass
+        try:
+            import fingerprint
+            fingerprint.seed_if_empty()
+        except Exception:
+            pass
 
         self.create_widgets()
 
@@ -146,6 +151,10 @@ class AuditCheckApp(tk.Tk):
         tk.Button(btn_frame, text='报表附注号一键修复与补全', font=('微软雅黑', 9),
                   bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
                   command=self.on_fix_report_numbers).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(btn_frame, text='导出结构指纹', font=('微软雅黑', 9),
+                  bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
+                  command=self.on_export_fingerprint).pack(side=tk.LEFT, padx=(0, 10))
 
         tk.Button(btn_frame, text='转换 docx/xlsx', font=('微软雅黑', 9),
                   bg='#EBF1F5', fg='#1F497D', cursor='hand2', padx=10, pady=6,
@@ -299,6 +308,51 @@ class AuditCheckApp(tk.Tk):
                 messagebox.showerror('勾稽失败', f'{exc}')
             finally:
                 self.btn_run.config(state=tk.NORMAL, text='开始自动化全面勾稽')
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ 结构指纹
+
+    def on_export_fingerprint(self):
+        """把当前附注的表结构指纹导出成 json（便于收集后合并进指纹库）。"""
+        notes = self.var_notes.get().strip()
+        if not notes or not os.path.exists(notes):
+            messagebox.showwarning('提示', '请先选择报告附注文件。')
+            return
+        self.btn_run.config(state=tk.DISABLED, text='导出中...')
+        self.log('\n' + '=' * 60)
+        self.log('[指纹] 正在提取表结构 ...')
+
+        def work():
+            _co_init()
+            try:
+                import convert_inputs
+                import fingerprint
+                import notes_parser
+                import table_semantics as ts
+
+                src = notes
+                try:
+                    src, _ = convert_inputs.convert_one(notes, log=self.log)
+                except Exception:
+                    pass
+                model = notes_parser.parse_notes(src, work_dir=WORK_DIR)
+                tables = ts.analyze_document(model)
+                payload = fingerprint.capture(model, tables,
+                                              project=self.var_project.get().strip())
+                out = fingerprint.save(payload,
+                                       os.path.join(os.path.dirname(notes),
+                                                    (payload.get('project') or 'project')
+                                                    + '.fingerprint.json'))
+                self.log(f'[指纹] 共 {len(tables)} 张表 → {out}')
+                self.after(0, lambda: messagebox.showinfo(
+                    '导出完成', f'已导出 {len(tables)} 张表的指纹：\n{out}'))
+            except Exception as exc:
+                self.log('[指纹] 失败：' + str(exc))
+                self.after(0, lambda: messagebox.showerror('导出失败', str(exc)))
+            finally:
+                self.after(0, lambda: self.btn_run.config(
+                    state=tk.NORMAL, text='开始自动化全面勾稽'))
 
         threading.Thread(target=work, daemon=True).start()
 

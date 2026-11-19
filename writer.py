@@ -322,6 +322,12 @@ def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats, globa
     if res is None or res.status == 'skip':
         target_cell.fill = FILL_UNKNOWN
         stats['skip'] += 1
+    elif res.status == 'unclear':
+        target_cell.fill = FILL_UNKNOWN
+        for c in range(1, item.target_col + 1):
+            ws.cell(row_ptr, c).fill = FILL_CHECK_ROW
+        ws.cell(row_ptr, 1).fill = FILL_UNKNOWN
+        stats['unclear'] += 1
     elif res.status == 'pass':
         target_cell.fill = FILL_PASS
         stats['pass'] += 1
@@ -454,8 +460,15 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
         if h:
             c.font = F_HEADER
     r += 1
-    group('附注内部勾稽', stats['pass'] + stats['fail'] + stats['skip'],
+    group('附注内部勾稽',
+          stats['pass'] + stats['fail'] + stats['skip'] + stats['unclear'],
           stats['pass'], stats['fail'], stats['skip'], '无法计算')
+    if stats['unclear']:
+        ws.cell(r, 1, '  其中结构存疑（黄色）').font = F_BODY
+        ws.cell(r, 2, stats['unclear']).font = F_BODY
+        ws.cell(r, 3, '认不准结构，请人工确认这些表').font = Font(
+            name='微软雅黑', size=9, color='B25E00')
+        r += 1
     group('报表勾稽', stats['cross_pass'] + stats['cross_fail'] + stats['cross_unmatched'],
           stats['cross_pass'], stats['cross_fail'], stats['cross_unmatched'])
     if tb_count:
@@ -755,7 +768,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                      'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0,
                      'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0,
                      'nx_pass': 0, 'nx_fail': 0, 'nx_unmatched': 0,
-                     'missing_count': 0, 'report_cells': 0, 'tb_cells': 0})
+                     'missing_count': 0, 'report_cells': 0, 'tb_cells': 0,
+                     'unclear': 0})
 
     # 先统计各核对类型的结果（用于汇总表）
     for cc in (cross or []):
@@ -847,7 +861,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     wb.save(out_path)
     log(f'[输出] 成果表已生成：{out_path}')
     log(f'[输出] 附注内部勾稽 {len(results)} 条：通过 {stats["pass"]}，'
-        f'有差异 {stats["fail"]}，无法计算 {stats["skip"]}')
+        f'有差异 {stats["fail"]}，结构存疑 {stats["unclear"]}，'
+        f'无法计算 {stats["skip"]}')
     if cross:
         log(f'[输出] 报表勾稽 {len(cross)} 条：平 {stats["cross_pass"]}，'
             f'有差异 {stats["cross_fail"]}，待确认 {stats["cross_unmatched"]}')

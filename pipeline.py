@@ -161,6 +161,23 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
 
     tpl_stats = {}
     tables = ts.analyze_document(model, hint=hint, stats=tpl_stats)
+
+    # 指纹库：同结构（子项目+表头+行列数完全一致）直接套用上次的判定
+    try:
+        import fingerprint
+        lib = fingerprint.load_library()
+        if lib:
+            matched = filled = 0
+            for tb in tables:
+                fp = fingerprint.match(tb, lib)
+                if fp:
+                    matched += 1
+                    filled += fingerprint.apply(fp, tb)
+            if matched:
+                log(f'      指纹库命中 {matched} 张表（库内 {len(lib)} 个项目），'
+                    f'补全列角色 {filled} 处')
+    except Exception as exc:
+        log(f'      指纹库不可用（{exc}）')
     log(f'      表 {len(tables)} 张'
         + (f'，模板补全列角色 {tpl_stats.get("template_roles", 0)} 处'
            if tpl_stats.get('template_roles') else ''))

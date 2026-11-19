@@ -178,6 +178,10 @@ def evaluate(item, table_model, tables_by_idx=None):
             return CheckResult(item, None, None, None, 'skip', '分母为 0，比例无法计算')
         expected = total / den
 
+    if item.level == 'unclear':
+        return CheckResult(item, expected, None, None, 'unclear',
+                           '结构存疑：认不准哪几行属于这个合计，请人工确认')
+
     actual = cell_number(grid, item.target_row, item.target_col)
     if actual is None:
         return CheckResult(item, expected, None, None, 'skip', '目标格不是数字')
@@ -360,8 +364,79 @@ def _cols_by_role(tm, period_key=None, period=None):
 
 # ---------------------------------------------------------------- 规则实现
 
+def _candidate_blocks(tm, total_row, ref_col):
+    """给合计行生成几个"候选行组"，用数值验证挑一个。
+
+    光靠语义会把「其中」行算错，光靠数值会被重述行带偏；
+    两者结合：语义出候选，数值只做**验证**，都不成立就标结构存疑。
+    """
+    rows = {r.row: r for r in tm.rows}
+    # 向上收集同级行（遇到分节/合计就停）
+    block = []
+    r = total_row - 1
+    while r >= 1:
+        info = rows.get(r)
+        if info is None:
+            break
+        if info.kind in ('blank', 'section', 'header', 'title'):
+            break
+        if (info.label or '').strip() in STOP_LABELS:
+            break
+        if info.kind == 'total':
+            block.append(r)
+            break
+        block.append(r)
+        r -= 1
+    block.sort()
+
+    def value(row_no):
+        return cell_number(tm.ref.grid, row_no, ref_col) or 0.0
+
+    base = []          # 候选一：排除其中/减项，含小计
+    with_break = []    # 候选二：把"父行为空"的其中行也算进来
+    subtotal_first = []  # 候选三：只取小计/合计行
+    for row_no in block:
+        info = rows[row_no]
+        label = (info.label or '').strip()
+        is_break = info.kind == 'group' or label.startswith(('其中', '减：', '减:'))
+        if info.kind in ('total', 'subtotal'):
+            base.append(row_no)
+            subtotal_first.append(row_no)
+            with_break.append(row_no)
+            continue
+        if is_break:
+            continue
+        base.append(row_no)
+        with_break.append(row_no)
+        subtotal_first.append(row_no)
+
+    # 候选二：父行为空的「其中」行补进来
+    last_parent = None
+    for row_no in block:
+        info = rows[row_no]
+        label = (info.label or '').strip()
+        is_break = info.kind == 'group' or label.startswith(('其中', '减：', '减:'))
+        if not is_break:
+            last_parent = row_no
+            continue
+        if last_parent is not None and abs(value(last_parent)) < 0.005:
+            with_break.append(row_no)
+
+    cands = []
+    for cand in (base, with_break, subtotal_first):
+        cand = sorted(set(cand))
+        if cand and cand not in cands:
+            cands.append(cand)
+    return cands
+
+
 def _rule_v_sum(tm, checks):
-    """合计行 = 上方明细之和（含小计/其中/减项处理）。"""
+    """合计行 = 上方明细之和（语义候选 + 数值验证）。
+
+    光靠语义会把「其中」行算错，光靠数值会被重述行带偏。
+    所以先由语义生成 2~3 个候选行组，再用数值验证挑一个；
+    一个都验不上，就标成「结构存疑」（黄色待确认），不报红差异。
+    """
     grid = tm.ref.grid
     totals = [r for r in tm.rows if r.kind == 'total']
     if not totals:
@@ -370,15 +445,43 @@ def _rule_v_sum(tm, checks):
     rows = {r.row: r for r in tm.rows}
     for tot in totals:
         ref_col = _pick_ref_col(tm, tot.row, cols)
-        detail_rows = _contribution_rows(tm, tot.row, ref_col)
-        if not detail_rows:
-            continue
+        target = cell_number(grid, tot.row, ref_col)
+        cands = _candidate_blocks(tm, tot.row, ref_col)
+
+        # 指纹库里有这个结构的判定 → 直接照用，不再猜
+        fp = getattr(tm, 'fingerprint', None)
+        if fp:
+            saved = (fp.get('sum_groups') or {}).get(str(tot.row))
+            if saved:
+                cands = [list(saved)] + [c for c in cands if c != saved]
+
+        # 首选原来的结构识别结果（历史行为，案例上验证过），
+        # 它不成立时再试语义候选，都不成立才标结构存疑。
+        legacy = _contribution_rows(tm, tot.row, ref_col)
+        if legacy:
+            cands = [legacy] + [c for c in cands if c != legacy]
+
+        if not cands:
+            continue        # 连候选都没有，说明这行不是"上方明细汇总"，不必核
+
+        picked = None
+        for cand in cands:
+            acc = sum(row_sign(rows[r].label) * (cell_number(grid, r, ref_col) or 0.0) for r in cand)
+            if target is not None and abs(acc - target) <= TOLERANCE:
+                picked = cand
+                break
+        unclear = picked is None
+        if picked is None:
+            picked = cands[0]
+
         for c in cols:
-            terms = [Term(row_sign(rows[r].label), r, c.index + 1) for r in detail_rows]
+            terms = [Term(row_sign(rows[r].label), r, c.index + 1) for r in picked]
             checks.append(CheckItem(
-                rule_id='V-SUM', level='hard',
+                rule_id='V-SUM', level='unclear' if unclear else 'hard',
                 chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
-                label=f'合计行 = 上方 {len(detail_rows)} 行之和（{c.header_text or "列" + str(c.index + 1)}）',
+                label=f'合计行 = 上方 {len(picked)} 行之和'
+                      f'（{c.header_text or "列" + str(c.index + 1)}）'
+                      + ('　[结构存疑]' if unclear else ''),
                 target_row=tot.row, target_col=c.index + 1,
                 terms=terms, period=c.period, period_key=c.period_key,
             ))
@@ -900,6 +1003,8 @@ def _rule_block_move(tm, checks):
 
 
 def _rule_prov_move(tm, checks):
+    if getattr(tm, 'table_type', '') not in ('PROVISION', 'STAGED_PROVISION',):
+        return
     """坏账/减值准备的变动表：期末 = 期初 + 计提 − 收回或转回 − 转销或核销。
 
     列名不叫"本期增加/减少"而叫"计提/收回/转销"，所以 R-MOVE 抓不到，
@@ -951,6 +1056,8 @@ def _rule_prov_move(tm, checks):
 
 
 def _rule_ecl(tm, checks):
+    if getattr(tm, 'table_type', '') not in ('STAGED_PROVISION',):
+        return
     """三阶段预期信用损失变动表（行向）：
 
         期末余额 = 期初余额 + 期初余额在本期 + 本期计提
