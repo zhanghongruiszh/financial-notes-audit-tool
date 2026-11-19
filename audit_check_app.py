@@ -380,6 +380,7 @@ def selftest(out_path):
         import cross_checks                  # noqa: F401
         import docx_ir                       # noqa: F401
         import docx_numbering                # noqa: F401
+        import note_number_checks            # noqa: F401
         import notes_parser                  # noqa: F401
         import numbering_fixer               # noqa: F401
         import pipeline                      # noqa: F401

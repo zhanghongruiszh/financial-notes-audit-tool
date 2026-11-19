@@ -226,7 +226,7 @@ def _write_diff_sheet(ws, results):
 
 # ---------------------------------------------------------------- 总览
 
-def _write_summary_sheet(ws, stats, results, model, tables):
+def _write_summary_sheet(ws, stats, results, model, tables, source_note=''):
     rows = [
         ('附注文件', model.path),
         ('主要项目附注章', len(model.chapters)),
@@ -238,6 +238,8 @@ def _write_summary_sheet(ws, stats, results, model, tables):
         ('  无法计算', stats['skip']),
         ('结构存疑的表', stats['unclear_tables']),
     ]
+    if source_note:
+        rows.insert(1, ('本次采用的底稿', source_note))
     if stats.get('cross_pass') or stats.get('cross_fail') or stats.get('cross_unmatched'):
         rows.extend([
             ('报表勾稽', stats['cross_pass'] + stats['cross_fail'] + stats['cross_unmatched']),
@@ -251,6 +253,13 @@ def _write_summary_sheet(ws, stats, results, model, tables):
             ('  平', stats['tb_pass']),
             ('  有差异', stats['tb_fail']),
             ('  待确认', stats['tb_unmatched']),
+        ])
+    if stats.get('nn_pass') or stats.get('nn_fail') or stats.get('nn_unmatched'):
+        rows.extend([
+            ('附注号勾稽', stats['nn_pass'] + stats['nn_fail'] + stats['nn_unmatched']),
+            ('  一致', stats['nn_pass']),
+            ('  不一致', stats['nn_fail']),
+            ('  待确认', stats['nn_unmatched']),
         ])
     ws.cell(1, 1, '勾稽总览').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     for i, (k, v) in enumerate(rows, 3):
@@ -426,10 +435,56 @@ def _write_tb_sheet(ws, tb_checks, stats):
     ws.freeze_panes = 'A2'
 
 
+# ---------------------------------------------------------------- 附注号勾稽
+
+def _write_note_no_sheet(ws, checks, stats):
+    headers = ['序号', '工作表', '行号', '科目', '报表附注号', '附注实际编号', '状态', '说明']
+    for i, h in enumerate(headers, 1):
+        c = ws.cell(1, i, h)
+        c.font = F_TITLE
+        c.fill = FILL_TITLE
+        c.alignment = Alignment(horizontal='center')
+
+    r = 2
+    for n, chk in enumerate(checks, 1):
+        vals = [n, chk.sheet, chk.row, chk.item_name, chk.actual or '（空）',
+                chk.expected, '', chk.note]
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+
+        st = ws.cell(r, 7)
+        if chk.status == 'pass':
+            ws.cell(r, 7, '一致')
+            for c in (5, 6, 7):
+                ws.cell(r, c).fill = FILL_PASS
+            stats['nn_pass'] += 1
+        elif chk.status == 'fail':
+            ws.cell(r, 7, '不一致')
+            for c in range(1, 8):
+                ws.cell(r, c).fill = FILL_FAIL_ROW
+            ws.cell(r, 5).fill = FILL_FAIL_TARGET
+            ws.cell(r, 7).font = Font(name='微软雅黑', size=9, color='9C0006')
+            stats['nn_fail'] += 1
+        else:
+            ws.cell(r, 7, '待确认')
+            ws.cell(r, 7).fill = FILL_UNKNOWN
+            stats['nn_unmatched'] += 1
+        st.value = ws.cell(r, 7).value
+        r += 1
+
+    widths = [6, 16, 8, 40, 16, 16, 10, 34]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = 'A2'
+
+
 # ---------------------------------------------------------------- 入口
 
 def write_workbook(out_path, model, tables, checks, results, cross=None,
-                   report=None, tb_checks=None, tb_xlsx=None, log=print):
+                   report=None, tb_checks=None, tb_xlsx=None,
+                   note_no_checks=None, source_note='', log=print):
     """生成成果表。"""
     wb = Workbook()
     ws = wb.active
@@ -448,7 +503,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
 
     stats = Counter({'pass': 0, 'fail': 0, 'skip': 0, 'unclear_tables': 0,
                      'cross_pass': 0, 'cross_fail': 0, 'cross_unmatched': 0,
-                     'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0})
+                     'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0,
+                     'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0})
     row_ptr = 4
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
@@ -471,8 +527,11 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
         used = sorted({c.tb_sheet for c in tb_checks if c.tb_sheet})
         _copy_tb_sheets(wb, tb_xlsx, used)
         _write_tb_sheet(wb.create_sheet('TB现金流核对'), tb_checks, stats)
+    if note_no_checks is not None:
+        _write_note_no_sheet(wb.create_sheet('附注号勾稽'), note_no_checks, stats)
 
-    _write_summary_sheet(wb.create_sheet('勾稽总览'), stats, results, model, tables)
+    _write_summary_sheet(wb.create_sheet('勾稽总览'), stats, results, model, tables,
+                         source_note=source_note)
 
     wb.save(out_path)
     log(f'[输出] 底稿已生成：{out_path}')
@@ -484,4 +543,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     if tb_checks:
         log(f'[输出] TB现金流核对 {len(tb_checks)} 条：平 {stats["tb_pass"]}，'
             f'有差异 {stats["tb_fail"]}，待确认 {stats["tb_unmatched"]}')
+    if note_no_checks:
+        log(f'[输出] 附注号勾稽 {len(note_no_checks)} 条：一致 {stats["nn_pass"]}，'
+            f'不一致 {stats["nn_fail"]}，待确认 {stats["nn_unmatched"]}')
     return out_path, dict(stats)

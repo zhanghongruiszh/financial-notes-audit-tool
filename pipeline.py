@@ -81,6 +81,19 @@ def _next_version(root, project_name):
     return max(used) + 1 if used else 1
 
 
+def _preferred_input(src, suffix):
+    """优先使用编号治理后的文件（如果存在）。
+
+    用户可能先做了「Word附注编号重排」或「报表附注号修复」，那么勾稽就应该
+    基于治理后的编号来做——否则刚修好的编号会被当成错误报出来。
+    """
+    if src and src.endswith(suffix):
+        return src
+    base = os.path.splitext(os.path.abspath(src))[0]
+    cand = base + suffix
+    return cand if os.path.exists(cand) else src
+
+
 def run(notes_path, report_path, tb_path=None, archive_root='.',
         project_name=None, log=print):
     """执行全流程，返回结果字典。"""
@@ -98,9 +111,20 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     os.makedirs(out_dir, exist_ok=True)
     log(f'[流程] 项目【{project}】第 {version} 版 → {out_dir}')
 
-    # 1) 解析附注
+    # 1) 解析附注（若做过编号重排，用重排后的那份）
+    notes_use = _preferred_input(notes_path, '_编号已规范.docx')
+    report_use = _preferred_input(report_path, '_附注编号已修复.xlsx')
+    used_note = ''
+    if os.path.abspath(notes_use) != os.path.abspath(notes_path):
+        used_note = f'附注采用编号规范后的：{os.path.basename(notes_use)}'
+        log(f'[编号] {used_note}')
+    if os.path.abspath(report_use) != os.path.abspath(report_path):
+        msg = f'报表采用附注号修复后的：{os.path.basename(report_use)}'
+        used_note = (used_note + '；' if used_note else '') + msg
+        log(f'[编号] {msg}')
+
     log('[1/5] 解析报告附注 ...')
-    model = notes_parser.parse_notes(notes_path, work_dir=os.path.join(out_dir, '_tmp'))
+    model = notes_parser.parse_notes(notes_use, work_dir=os.path.join(out_dir, '_tmp'))
     log(f'      章 {len(model.chapters)} 个，子项目 {len(model.sub_items)} 个')
 
     # 2) 表格语义
@@ -118,12 +142,12 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
 
     # 4) 报表勾稽
     log('[4/5] 读取三张报表并做跨表勾稽 ...')
-    report = rr.read_report(report_path)
+    report = rr.read_report(report_use)
     log(f'      识别到报表 {len(report.sheets)} 张：'
         + '、'.join(s.name for s in report.sheets))
     cross = cross_checks.build_cross_checks(model, tables, report)
     import openpyxl
-    wb_src = openpyxl.load_workbook(report_path, data_only=True)
+    wb_src = openpyxl.load_workbook(report_use, data_only=True)
     report_values = {}
     for cc in cross:
         if cc.sheet and cc.rows and cc.cols and cc.sheet in wb_src.sheetnames:
@@ -132,6 +156,13 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     for cc in cross:
         cross_checks.evaluate(cc, report_values)
     log(f'      跨表勾稽 {len(cross)} 条')
+
+    # 4a) 报表附注号 与 附注实际编号 的一致性
+    log('[4a/5] 核对报表「附注」列与附注实际编号 ...')
+    import note_number_checks as nn_mod
+    nn_results = nn_mod.build_note_no_checks(report_use, model)
+    if nn_results:
+        log(f'      附注号勾稽 {len(nn_results)} 条：{nn_mod.summarize(nn_results)}')
 
     # 5) TB 现金流量表核对
     tb_results = []
@@ -157,7 +188,9 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     out_xlsx = os.path.join(out_dir, f'{project}check_v{version}.xlsx')
     writer.write_workbook(out_xlsx, model, tables, checks, results,
                           cross=cross, report=report,
-                          tb_checks=tb_results or None, tb_xlsx=tb_xlsx, log=log)
+                          tb_checks=tb_results or None, tb_xlsx=tb_xlsx,
+                          note_no_checks=nn_results or None,
+                          source_note=used_note, log=log)
 
     # 归档导入的三个原始文件，以及（若存在）编号治理产出的两个文件
     archived = []
