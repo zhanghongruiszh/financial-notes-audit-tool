@@ -479,6 +479,43 @@ def _candidate_blocks(tm, total_row, ref_col):
 
 
 
+
+def _rule_tax_split(tm, checks):
+    """其他综合收益这类"税前 − 所得税 = 税后净额"的横向关系。
+
+    全按表头关键字识别（税前/所得税/税后），不认表名、不认固定列号。
+    """
+    pre = tax = post = None
+    for c in tm.columns:
+        head = (c.header_text or '').replace(' ', '')
+        if not head:
+            continue
+        if pre is None and ('税前' in head or '税前金额' in head):
+            pre = c
+        elif tax is None and '所得税' in head:
+            tax = c
+        elif post is None and ('税后' in head):
+            post = c
+    if not (pre and post):
+        return
+
+    for r in tm.rows:
+        if r.kind not in ('detail', 'subtotal', 'total') or not r.label:
+            continue
+        if not cell_number(tm.ref.grid, r.row, post.index + 1):
+            continue
+        terms = [Term(+1, r.row, pre.index + 1)]
+        if tax is not None:
+            terms.append(Term(-1, r.row, tax.index + 1))
+        checks.append(CheckItem(
+            rule_id='R-TAX', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label='税后净额 = 税前金额 − 所得税',
+            target_row=r.row, target_col=post.index + 1,
+            terms=terms,
+        ))
+
+
 def _rule_asset_blocks(tm, checks):
     """固定资产/无形资产/使用权资产这类"分段式"表的纵向加减：
 
@@ -1310,6 +1347,7 @@ def build_checks(tables):
         _rule_ecl(tm, checks)
         _rule_sum_down(tm, checks)
         _rule_asset_blocks(tm, checks)
+        _rule_tax_split(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
 

@@ -209,6 +209,10 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     # 一对多的科目（收入&成本、三项费用、费用其中项）在这里补挂
     cross = cross_checks.fill_missing_checks(
         model, tables, report, cross, get_value=_get_value)
+    # 「归属于母公司所有者的其他综合收益」只对利润表，不对资产负债表
+    cross = [c for c in cross
+             if not (str(getattr(c, 'sub_item', '')).startswith('归属于')
+                     and getattr(c, 'sheet', '') == '资产负债表')]
     report_values = {}
     for cc in cross:
         if cc.sheet and cc.rows and cc.cols and cc.sheet in wb_src.sheetnames:
