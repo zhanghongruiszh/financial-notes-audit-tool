@@ -4,12 +4,13 @@ numbering_fixer.py — 附注子项目编号的体检与重建。
 
 为什么需要
 ----------
-Word 里的编号有三种情况，还可能叠加：
+Word 里的编号有五种常见情况，还可能叠加：
     ① 只有人工编号：正文里就写着「1、货币资金」
     ② 只有自动编号：段落挂 numId，正文里没有数字
     ③ 两者都有：Word 显示成「1、1、货币资金」
-再加上自动编号会重启（1–8 之后又回到 1），单靠解析只能"看出问题"，
-不能根治。
+    ④ 完全没有编号
+    ⑤ 分段：同一章里编号重启，比如 1–13 实际是「1–6」一段 +「1–7」另一段
+单靠解析只能"看出问题"，不能根治。
 
 本模块做两件事
 --------------
@@ -94,6 +95,7 @@ def diagnose(doc_model):
     for ch in doc_model.chapters:
         prev_values = []
         seen = {}
+        seg_next = None          # 分段重启后，本段"应该出现的下一个号"
         for sub in ch.sub_items:
             head = doc_model.stream[sub.heading_stream_pos]
             auto = head.get('auto_number')
@@ -104,16 +106,27 @@ def diagnose(doc_model):
 
             if auto and manual:
                 problem = '双编号'
+                seg_next = None
             elif not auto and not manual:
                 problem = '无编号'
+                seg_next = None
+            elif prev_values and v < prev_values[-1]:
+                # 编号突然回退：回到 1 就是新开一段（如 1–6 之后又来 1–7）
+                problem = '分段重启' if v == 1 else '倒序'
+                seg_next = (v + 1) if v == 1 else None
+            elif seg_next is not None and v == seg_next:
+                # 正处在那一段里
+                problem = '分段内编号'
+                seg_next = v + 1
             elif v in seen:
                 problem = '重号'
-            elif prev_values and v < prev_values[-1]:
-                problem = '重启' if v == 1 else '倒序'
+                seg_next = None
             elif v != sub.seq:
                 problem = '跳号'
+                seg_next = None
             else:
                 problem = '正常'
+                seg_next = None
 
             issues.append(NumIssue(
                 chapter=ch.name,

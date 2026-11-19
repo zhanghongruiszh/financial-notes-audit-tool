@@ -95,8 +95,9 @@ def normalize_name(text):
             if s.endswith(suf2):
                 s = s[:-len(suf2)]
                 changed = True
-    # 去掉开头的编号，如 "1、" "1." "(1)"
+    # 去掉开头的编号，如 "1、" "1." "(1)" "四、" "（二）"
     s = re.sub(r'^[（(]?\d+[)）]?[、.．]?', '', s)
+    s = re.sub(r'^[（(]?[一二三四五六七八九十]+[)）]?[、.．]', '', s)
     return s.strip()
 
 

@@ -261,6 +261,8 @@ def _write_summary_sheet(ws, stats, results, model, tables, source_note=''):
             ('  不一致', stats['nn_fail']),
             ('  待确认', stats['nn_unmatched']),
         ])
+    if stats.get('missing_count'):
+        rows.append(('未披露候选（人工判断）', stats['missing_count']))
     ws.cell(1, 1, '勾稽总览').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     for i, (k, v) in enumerate(rows, 3):
         ws.cell(i, 1, k).font = F_HEADER
@@ -480,11 +482,52 @@ def _write_note_no_sheet(ws, checks, stats):
     ws.freeze_panes = 'A2'
 
 
+# ---------------------------------------------------------------- 未披露汇总
+
+def _write_disclosure_sheet(ws, items, stats):
+    """报表有金额、但附注找不到同名小节的科目清单，供人工判断。"""
+    periods = sorted({d for it in items for d in it.amounts}, reverse=True)
+    headers = ['序号', '报表', '行号', '报表科目'] + \
+              [str(d) for d in periods] + ['建议']
+    for i, h in enumerate(headers, 1):
+        c = ws.cell(1, i, h)
+        c.font = F_TITLE
+        c.fill = FILL_TITLE
+        c.alignment = Alignment(horizontal='center')
+
+    note = ws.cell(2, 1, '以下科目报表上有金额，但附注主要项目里没有同名小节。'
+                         '请判断是「漏披露」还是「本就不需要披露」。')
+    note.font = Font(name='微软雅黑', size=9, color='B25E00')
+    ws.merge_cells(start_row=2, start_column=1, end_row=2,
+                   end_column=max(len(headers), 2))
+
+    r = 3
+    for n, it in enumerate(items, 1):
+        vals = [n, it.sheet, it.row, it.item_name]
+        for d in periods:
+            vals.append(it.amounts.get(d))
+        vals.append('待人工判断')
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+            if 5 <= i <= 4 + len(periods):
+                cell.number_format = FMT_AMOUNT
+        ws.cell(r, len(vals)).fill = FILL_UNKNOWN
+        stats['missing_count'] += 1
+        r += 1
+
+    widths = [6, 16, 8, 40] + [16] * len(periods) + [16]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = 'A3'
+
+
 # ---------------------------------------------------------------- 入口
 
 def write_workbook(out_path, model, tables, checks, results, cross=None,
                    report=None, tb_checks=None, tb_xlsx=None,
-                   note_no_checks=None, source_note='', log=print):
+                   note_no_checks=None, disclosure=None, source_note='', log=print):
     """生成成果表。"""
     wb = Workbook()
     ws = wb.active
@@ -504,7 +547,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     stats = Counter({'pass': 0, 'fail': 0, 'skip': 0, 'unclear_tables': 0,
                      'cross_pass': 0, 'cross_fail': 0, 'cross_unmatched': 0,
                      'tb_pass': 0, 'tb_fail': 0, 'tb_unmatched': 0,
-                     'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0})
+                     'nn_pass': 0, 'nn_fail': 0, 'nn_unmatched': 0,
+                     'missing_count': 0})
     row_ptr = 4
     for tm in tables:
         key = (tm.chapter, tm.sub_item, tm.ref.idx)
@@ -529,6 +573,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
         _write_tb_sheet(wb.create_sheet('TB现金流核对'), tb_checks, stats)
     if note_no_checks is not None:
         _write_note_no_sheet(wb.create_sheet('附注号勾稽'), note_no_checks, stats)
+    if disclosure is not None:
+        _write_disclosure_sheet(wb.create_sheet('未披露汇总'), disclosure, stats)
 
     _write_summary_sheet(wb.create_sheet('勾稽总览'), stats, results, model, tables,
                          source_note=source_note)
@@ -546,4 +592,7 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     if note_no_checks:
         log(f'[输出] 附注号勾稽 {len(note_no_checks)} 条：一致 {stats["nn_pass"]}，'
             f'不一致 {stats["nn_fail"]}，待确认 {stats["nn_unmatched"]}')
+    if disclosure is not None:
+        log(f'[输出] 未披露汇总 {len(disclosure)} 条（报表有金额、附注未找到同名小节，'
+            f'需人工判断）')
     return out_path, dict(stats)

@@ -164,6 +164,12 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     if nn_results:
         log(f'      附注号勾稽 {len(nn_results)} 条：{nn_mod.summarize(nn_results)}')
 
+    # 4c) 报表项目在附注里有没有披露（只汇总，不下结论）
+    log('[4c/5] 核对报表项目是否在附注中披露 ...')
+    import disclosure_checks as dc_mod
+    disclosure = dc_mod.build_disclosure_checks(report_use, report, model)
+    log(f'      未披露候选 {len(disclosure)} 条（供人工判断）')
+
     # 5) TB 现金流量表核对
     tb_results = []
     tb_xlsx = None
@@ -190,6 +196,7 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
                           cross=cross, report=report,
                           tb_checks=tb_results or None, tb_xlsx=tb_xlsx,
                           note_no_checks=nn_results or None,
+                          disclosure=disclosure,
                           source_note=used_note, log=log)
 
     # 归档导入的三个原始文件，以及（若存在）编号治理产出的两个文件
