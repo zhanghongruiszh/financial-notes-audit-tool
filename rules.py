@@ -1491,6 +1491,62 @@ def _rule_restricted_money(tables, checks):
                 terms=[Term(+1, total.row, c.index + 1, table_idx=src.ref.idx)],
             ))
 
+
+
+# 拆成两张表时，列名的增减含义（靠关键字判断，不看列角色）
+_SPLIT_INC = ('本年发行', '发行金额', '计提利息', '溢折价摊销', '摊销', '本年增加')
+_SPLIT_DEC = ('本年偿还', '偿还金额', '本年减少', '收回金额')
+
+
+def _rule_split_move(tables, checks):
+    """拆成两张表的变动表：期末（第二张） = 期初（第一张） + 增加 − 减少。
+
+    典型：应付债券 / 其他流动负债 —— 第一张有期初，第二张有本年发行、
+    计提利息、摊销、偿还、期末。
+    """
+    def col_by(tm, *words, role=None):
+        for c in tm.columns:
+            if not c.is_data:
+                continue
+            head = (c.header_text or '').replace(' ', '')
+            if any(w in head for w in words):
+                return c
+        return None
+
+    prev = None
+    for tm in tables:
+        if prev is not None and prev.sub_item == tm.sub_item:
+            a, b = prev, tm
+            end = col_by(b, '期末余额') or col_by(b, '期末')
+            beg = col_by(a, '期初余额') or col_by(a, '期初')
+            if end is not None and beg is not None:
+                incs = [c for c in b.columns if c.is_data and c is not end
+                        and any(w in (c.header_text or '') for w in _SPLIT_INC)]
+                decs = [c for c in b.columns if c.is_data and c is not end
+                        and any(w in (c.header_text or '') for w in _SPLIT_DEC)]
+                a_rows = {(r.label or '').strip(): r for r in a.rows
+                          if r.kind in ('detail', 'subtotal', 'total') and r.label}
+                for rb in b.rows:
+                    if rb.kind not in ('detail', 'subtotal', 'total') or not rb.label:
+                        continue
+                    ra = a_rows.get((rb.label or '').strip())
+                    if ra is None:
+                        continue
+                    if not cell_number(b.ref.grid, rb.row, end.index + 1):
+                        continue
+                    terms = [Term(+1, ra.row, beg.index + 1, table_idx=a.ref.idx)]
+                    terms += [Term(+1, rb.row, c.index + 1) for c in incs]
+                    terms += [Term(-1, rb.row, c.index + 1) for c in decs]
+                    checks.append(CheckItem(
+                        rule_id='R-SPLIT', level='hard',
+                        chapter=tm.chapter, sub_item=tm.sub_item,
+                        table_idx=b.ref.idx,
+                        label=f'期末 = 期初 + 增加 − 减少（{rb.label}·续表）',
+                        target_row=rb.row, target_col=end.index + 1,
+                        terms=terms,
+                    ))
+        prev = tm
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
