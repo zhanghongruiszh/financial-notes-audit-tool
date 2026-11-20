@@ -288,7 +288,9 @@ def _row_by_value(tm, current, sheet, item_row, item_col, get_value):
             hits += 1
         if not hits:
             continue
-        sc = (total, -hits)
+        # 值相同的行有多条时（比如明细恰好等于合计），优先取"合计"行
+        prefer = 0 if '合计' in (r.label or '') else 1
+        sc = (total, prefer, -hits)
         if best_score is None or sc < best_score:
             best, best_score = r, sc
     if best is not None and best_score is not None and best_score[0] <= 0.01:

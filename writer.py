@@ -222,7 +222,8 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     has_tb_here = (show_title and
                    any(k[0] == tm.ref.idx for k in (tb_by_row or {})))
     for pp in (periods if show_title else []):
-        hc = ws.cell(row_ptr - 1, report_map[pp], '')
+        hc = ws.cell(row_ptr - 1, report_map[pp],
+                     f'【报表差额: {pp}】')
         hc.font = F_REPORT
         hc.fill = FILL_REPORT_HDR
         hc.alignment = Alignment(horizontal='center')
@@ -416,6 +417,9 @@ def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx, col_off=0):
 def _write_check_group(ws, items, src_to_dst, results_by_key, row_ptr, stats,
                        global_rows, check_rows=None):
     """同一个目标行的多条纵向勾稽写在同一行，每条占一列。"""
+    # 首列标注，和原始版成果保持一致，方便一眼找到勾稽行
+    label = ws.cell(row_ptr, 1, '【勾稽差额】')
+    label.font = Font(name='微软雅黑', size=9, bold=True, color='808080')
     for item in items:
         _write_check_formula(ws, item, src_to_dst, results_by_key, row_ptr,
                              stats, global_rows, check_rows)
