@@ -126,6 +126,7 @@ def ordered_items(book, wb=None):
         blocks = {}
         for name, (row, item_col) in sheet.items.items():
             blocks.setdefault(item_col, []).append((row, name))
+        _sheet_items_start = len(out)
         for item_col in sorted(blocks):
             rows = sorted(blocks[item_col])
             prev_line = None
@@ -150,7 +151,46 @@ def ordered_items(book, wb=None):
                 order += 1
                 if kind == 'line':
                     prev_line = name
+        _fix_sub_parents(out, _sheet_items_start, sheet.name)
     return out
+
+
+def _fix_sub_parents(items, start, sheet_name):
+    """子项的归属：资产负债表/利润表往上找，现金流量表往下找。
+
+    同方向找不到时再用反方向兜底。
+    """
+    seg = items[start:]
+    down = str(sheet_name).startswith('现金流量表')
+
+    def _lines():
+        return [i for i in seg if i.kind == 'line']
+
+    lines = _lines()
+    for idx, it in enumerate(seg):
+        if it.kind != 'sub':
+            continue
+        parent = None
+        # 现金流量表里"投资/筹资活动产生的现金流量净额"被归为合计项，
+        # 但它们正是子项的归属锚点，所以两种类型都算候选
+        anchors = ('line', 'total') if down else ('line',)
+        if down:
+            for nxt in seg[idx + 1:]:
+                if nxt.kind in anchors and nxt.block == it.block:
+                    parent = nxt.name
+                    break
+        else:
+            for prv in reversed(seg[:idx]):
+                if prv.kind in anchors and prv.block == it.block:
+                    parent = prv.name
+                    break
+        if parent is None:      # 反方向兜底（两种类型都看）
+            for other in (seg[idx + 1:] if not down else reversed(seg[:idx])):
+                if other.kind in ('line', 'total') and other.block == it.block:
+                    parent = other.name
+                    break
+        if parent:
+            it.parent = parent
 
 
 def line_items(book):
