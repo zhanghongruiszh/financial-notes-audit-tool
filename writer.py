@@ -35,10 +35,10 @@ F_TITLE = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
 FILL_TITLE = PatternFill('solid', start_color='1F497D', end_color='1F497D')
 
 F_TABLE_TITLE = Font(name='微软雅黑', size=9, bold=True, color='1F497D')
-FILL_TABLE_TITLE = PatternFill('solid', start_color='DCE6F1', end_color='DCE6F1')
+FILL_TABLE_TITLE = PatternFill(fill_type=None)
 
 F_HEADER = Font(name='微软雅黑', size=9, bold=True, color='333333')
-FILL_HEADER = PatternFill('solid', start_color='F2F4F8', end_color='F2F4F8')
+FILL_HEADER = PatternFill(fill_type=None)
 
 F_BODY = Font(name='微软雅黑', size=9, color='000000')
 F_CHECK = Font(name='微软雅黑', size=9, color='1F497D')
@@ -48,8 +48,8 @@ FILL_PASS = PatternFill('solid', start_color='E2EFDA', end_color='E2EFDA')
 FILL_FAIL_TARGET = PatternFill('solid', start_color='FFC7CE', end_color='FFC7CE')
 FILL_FAIL_ROW = PatternFill('solid', start_color='FDE2E2', end_color='FDE2E2')
 FILL_UNKNOWN = PatternFill('solid', start_color='FFF2CC', end_color='FFF2CC')
-FILL_CHECK_ROW = PatternFill('solid', start_color='F7F9FC', end_color='F7F9FC')
-FILL_REPORT_HDR = PatternFill('solid', start_color='E8DFF5', end_color='E8DFF5')
+FILL_CHECK_ROW = PatternFill(fill_type=None)
+FILL_REPORT_HDR = PatternFill(fill_type=None)
 FILL_TB_HDR = PatternFill('solid', start_color='DDEBF7', end_color='DDEBF7')
 
 THIN = Side(style='thin', color='D9D9D9')
@@ -311,16 +311,344 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
 
         row_ptr += 1
 
+        vert_items = []
         for item in checks_by_row.get(r_idx, []):
             if item.rule_id in check_cols:
                 # 横向勾稽：写在本行右侧的新列里，不插行
                 _write_horiz_cell(ws, item, src_to_dst, results_by_key,
-                                  row_ptr, check_cols[item.rule_id],
+                                  row_ptr - 1, check_cols[item.rule_id],
                                   stats, global_rows, check_rows)
             else:
-                # 纵向勾稽：插一行，只留公式，不写说明文字
-                row_ptr = _write_check_row(ws, item, src_to_dst, results_by_key,
-                                           row_ptr, stats, global_rows, check_rows)
+                vert_items.append(item)
+        if vert_items:
+            # 同一个目标行的纵向勾稽合并成**一行**，各自写在自己的列
+            row_ptr = _write_check_group(ws, vert_items, src_to_dst,
+                                         results_by_key, row_ptr, stats,
+                                         global_rows, check_rows)
+
+    # 有差异的表：标题行标红，一眼能扫到哪张表有问题
+    try:
+        table_failed = any(r.status == 'fail'
+                           for r in results_by_key.values()
+                           if r.item.table_idx == tm.ref.idx)
+    except Exception:
+        table_failed = False
+    if table_failed:
+        span = max(3, tm.ref.cols)
+        for c in range(1, span + 1):
+            cell = ws.cell(title_row, c)
+            cell.fill = FILL_FAIL_TARGET
+        tc = ws.cell(title_row, 1)
+        tc.font = Font(name='微软雅黑', size=11, bold=True, color='C00000')
+        ic = ws.cell(title_row, max(3, tm.ref.cols))
+        if ic.value:
+            ic.font = Font(name='微软雅黑', size=8, color='C00000')
+
+    return row_ptr, note_row_map
+
+
+def _cell_ref(term, src_to_dst, global_rows, own_table_idx):
+    tid = term.table_idx or own_table_idx
+    if tid == own_table_idx:
+        row = src_to_dst.get(term.row, term.row)
+    else:
+        row = global_rows.get((tid, term.row))
+        if row is None:
+            return None
+    return f'{get_column_letter(term.col)}{row}'
+
+
+def _write_horiz_cell(ws, item, src_to_dst, results_by_key, row_ptr, col,
+                      stats, global_rows, check_rows=None):
+    """横向勾稽写在本行右侧列：只放差额公式，不写文字。"""
+    res = results_by_key.get(id(item))
+    own_idx = item.table_idx
+    target_ref = (f'{get_column_letter(item.target_col + COL_OFF)}'
+                  f'{src_to_dst.get(item.target_row, item.target_row)}')
+    if check_rows is not None:
+        check_rows[id(item)] = row_ptr
+
+    if item.den:
+        num = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        den = _terms_expr(item, item.den, src_to_dst, global_rows, own_idx)
+        formula = (f'={target_ref}-({num})/({den})'
+                   if num is not None and den is not None else None)
+        fmt = FMT_RATIO
+    else:
+        expr = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        formula = f'={target_ref}-({expr})' if expr is not None else None
+        fmt = FMT_AMOUNT
+
+    cell = ws.cell(row_ptr, col)
+    if formula is None or res is None or res.status == 'skip':
+        stats['skip'] += 1
+        cell.fill = FILL_UNKNOWN
+        return
+    cell.value = formula
+    cell.number_format = fmt
+    cell.border = BORDER
+    # 公式格一律浅绿：一眼能看出"这里做了公式勾稽"
+    if res.status == 'fail':
+        cell.fill = FILL_FAIL_TARGET      # 报错整格标红
+        stats['fail'] += 1
+    elif res.status == 'unclear':
+        cell.fill = FILL_UNKNOWN
+        stats['unclear'] += 1
+    else:
+        cell.fill = FILL_PASS             # 做了公式的格子浅绿
+        stats['pass'] += 1
+
+
+def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx, col_off=0):
+    parts = []
+    for i, t in enumerate(terms):
+        ref = _cell_ref(t, src_to_dst, global_rows, own_table_idx)
+        if ref is None:
+            return None
+        sign = '-' if t.coef < 0 else '+'
+        if i == 0:
+            parts.append(f'-{ref}' if t.coef < 0 else ref)
+        else:
+            parts.append(f'{sign}{ref}')
+    return ''.join(parts)
+
+
+def _write_check_group(ws, items, src_to_dst, results_by_key, row_ptr, stats,
+                       global_rows, check_rows=None):
+    """同一个目标行的多条纵向勾稽写在同一行，每条占一列。"""
+    for item in items:
+        _write_check_formula(ws, item, src_to_dst, results_by_key, row_ptr,
+                             stats, global_rows, check_rows)
+    return row_ptr + 1
+
+
+def _write_check_formula(ws, item, src_to_dst, results_by_key, row_ptr, stats,
+                         global_rows, check_rows=None):
+    """把一条纵向勾稽的差额公式写进它自己的列（不换行）。"""
+    res = results_by_key.get(id(item))
+    own_idx = item.table_idx
+    col = item.target_col + COL_OFF
+    target_ref = (f'{get_column_letter(col)}'
+                  f'{src_to_dst.get(item.target_row, item.target_row)}')
+    if check_rows is not None:
+        check_rows[id(item)] = row_ptr
+
+    if item.den:
+        num = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        den = _terms_expr(item, item.den, src_to_dst, global_rows, own_idx)
+        formula = (f'={target_ref}-({num})/({den})'
+                   if num is not None and den is not None else None)
+        number_format = FMT_RATIO
+    else:
+        expr = _terms_expr(item, item.terms, src_to_dst, global_rows, own_idx)
+        formula = f'={target_ref}-({expr})' if expr is not None else None
+        number_format = FMT_AMOUNT
+
+    cell = ws.cell(row_ptr, col)
+    cell.border = BORDER
+    if formula is None or res is None or res.status == 'skip':
+        cell.value = None
+        stats['skip'] += 1
+        return
+    cell.value = formula
+    cell.number_format = number_format
+    if res.status == 'fail':
+        cell.fill = FILL_FAIL_TARGET          # 报错：红底 + 正常显示错误数字
+        stats['fail'] += 1
+    elif res.status == 'unclear':
+        cell.fill = FILL_UNKNOWN              # 存疑：黄底
+        stats['unclear'] += 1
+    else:
+        cell.fill = FILL_PASS                 # 平的：绿底 + 显示 "-"
+        stats['pass'] += 1
+
+
+def _write_check_row(ws, item, src_to_dst, results_by_key, row_ptr, stats,
+                     global_rows, check_rows=None):
+    _write_check_formula(ws, item, src_to_dst, results_by_key, row_ptr, stats,
+                         global_rows, check_rows)
+    return row_ptr + 1
+
+
+def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
+                 global_rows, report_by_row, tb_by_row, report_map, tb_map, raw=None,
+                 check_rows=None, anomalies=None, show_title=True):
+    grid = tm.ref.grid
+
+    # 第一列放 Word 里的编号（如「六、3」），后面跟科目名；
+    # 同一个子项目的后续子表不再重复挂标题，免得看花眼
+    title_row = row_ptr
+    raw_no = getattr(tm, 'sub_no', '') or ''
+    num = raw_no.split('、')[-1] if raw_no else ''
+    if num.isdigit():
+        num = str(int(num))
+    if show_title:
+        no_cell = ws.cell(row_ptr, 1, num)
+        no_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+        no_cell.fill = FILL_TABLE_TITLE
+        no_cell.alignment = Alignment(horizontal='center')
+        title_cell = ws.cell(row_ptr, 2, tm.sub_item)
+        title_cell.font = Font(name='微软雅黑', size=11, bold=True, color='1F497D')
+        title_cell.fill = FILL_TABLE_TITLE
+    else:
+        title_cell = ws.cell(row_ptr, 1, '')
+        title_cell.fill = FILL_TABLE_TITLE
+    info_cell = ws.cell(row_ptr, max(3, tm.ref.cols),
+                        f'表#{tm.ref.idx}　{tm.ref.rows}行×{tm.ref.cols}列　'
+                        f'{tm.table_type_name or "未分类"}')
+    info_cell.font = Font(name='微软雅黑', size=8, color='808080')
+    info_cell.fill = FILL_TABLE_TITLE
+    info_cell.alignment = Alignment(horizontal='right')
+    for c in range(2, max(3, tm.ref.cols) + 1):
+        ws.cell(row_ptr, c).fill = FILL_TABLE_TITLE
+    row_ptr += 1
+
+    hard = [w for w in tm.warnings if not w.startswith('（期间待确认）')]
+    soft = [w for w in tm.warnings if w.startswith('（期间待确认）')]
+    if hard:
+        cell = ws.cell(row_ptr, 1, '⚠ ' + '；'.join(hard[:3]))
+        cell.font = Font(name='微软雅黑', size=9, color='B25E00')
+        cell.fill = FILL_UNKNOWN
+        stats['unclear_tables'] += 1
+        row_ptr += 1
+    if soft:
+        cell = ws.cell(row_ptr, 1, '· ' + '；'.join(
+            w.replace('（期间待确认）', '') for w in soft[:4]))
+        cell.font = Font(name='微软雅黑', size=8, color='808080')
+        row_ptr += 1
+
+    # ---------- 横向勾稽：在表格右侧加列，不插行 ----------
+    horiz_map = {'H-SUM': '横加', 'R-NET': '余额-准备', 'R-NBV': '原值-折旧',
+                 'R-MOVE': '期初期末', 'R-PCT': '比例'}
+    rules_here = []
+    for items in checks_by_row.values():
+        for it in items:
+            if it.rule_id in horiz_map and it.rule_id not in rules_here:
+                rules_here.append(it.rule_id)
+    check_cols = {}
+    base_col = tm.ref.cols + 2 + COL_OFF
+    # 报表勾稽列是全局统一的，横向列不能压到它们上面；
+    # 会撞的话就顺延到报表/TB 块后面
+    report_start = min(report_map.values()) if report_map else 999
+    if rules_here and base_col + len(rules_here) > report_start:
+        base_col = (max(tb_map.values()) if tb_map else report_start) + 2
+    for i, rid in enumerate(rules_here):
+        check_cols[rid] = base_col + i
+        hc = ws.cell(row_ptr - 1, check_cols[rid], horiz_map[rid])
+        hc.font = Font(name='微软雅黑', size=8, color='808080')
+        hc.fill = FILL_TABLE_TITLE
+        hc.alignment = Alignment(horizontal='center')
+
+    # 报表勾稽列**所有表统一**（便于纵向对比），
+    # 起点由最宽的表决定，表再宽也不会覆盖
+
+    periods = list(report_map.keys())
+    has_tb_here = (show_title and
+                   any(k[0] == tm.ref.idx for k in (tb_by_row or {})))
+    for pp in (periods if show_title else []):
+        hc = ws.cell(row_ptr - 1, report_map[pp], '')
+        hc.font = F_REPORT
+        hc.fill = FILL_REPORT_HDR
+        hc.alignment = Alignment(horizontal='center')
+        if has_tb_here:
+            hc2 = ws.cell(row_ptr - 1, tb_map[pp], f'TB差额 {pp}')
+            hc2.font = F_REPORT
+            hc2.fill = FILL_TB_HDR
+            hc2.alignment = Alignment(horizontal='center')
+
+    src_to_dst = {}
+    note_row_map = {}
+    for r_idx, row in enumerate(grid, 1):
+        for c_idx, cellinfo in enumerate(row, 1):
+            if cellinfo['m'] != ' ':
+                continue
+            text = cellinfo['t']
+            if not text:
+                continue
+            import docx_ir
+            if anomalies is not None and docx_ir.is_trailing_minus(text):
+                # 「9,900.00-」这种尾随负号：数值照算，但要提示把 - 删掉
+                anomalies.append({
+                    'sub_item': tm.sub_item, 'table': tm.ref.idx,
+                    'row': r_idx, 'col': c_idx, 'text': str(text).strip(),
+                })
+            value = docx_ir.parse_cell_value(text)
+            _write_value(ws, row_ptr, c_idx + COL_OFF, value)
+            if _column_is_ratio(tm, c_idx - 1) and isinstance(value, float):
+                ws.cell(row_ptr, c_idx + COL_OFF).number_format = FMT_RATIO
+        kind = next((r.kind for r in tm.rows if r.row == r_idx), None)
+        if kind == 'header':
+            for c_idx in range(1, tm.ref.cols + 1):
+                cell = ws.cell(row_ptr, c_idx + COL_OFF)
+                cell.font = F_HEADER
+                cell.fill = FILL_HEADER
+        src_to_dst[r_idx] = row_ptr
+        global_rows[(tm.ref.idx, r_idx)] = row_ptr
+        note_row_map[(tm.ref.idx, r_idx)] = row_ptr
+
+        # 右侧：只写差额公式，原始数字直接在公式里引用「原始数据」
+        for cc in (report_by_row.get((tm.ref.idx, r_idx), [])
+                   if show_title else []):
+            if cc.period in report_map:
+                dc = report_map[cc.period]
+                raw_ref = raw.ref(cc.sheet, cc.rows, cc.cols) if raw else None
+                parts = []
+                for i, (rr, cc0, coef) in enumerate(
+                        cc.note_terms or [(cc.note_row, cc.note_col, 1)]):
+                    ref = f'{get_column_letter(cc0 + COL_OFF)}{row_ptr}'
+                    if i == 0:
+                        parts.append(f'-{ref}' if coef < 0 else ref)
+                    else:
+                        parts.append(('-' if coef < 0 else '+') + ref)
+                expr = ''.join(parts)
+                if raw_ref:
+                    formula = f'=({expr})-{raw_ref}'
+                else:
+                    formula = f'=({expr})-{cc.report_value}'
+                cell_diff = ws.cell(row_ptr, dc, formula)
+                cell_diff.number_format = FMT_AMOUNT
+                cell_diff.border = BORDER
+                cell_diff.font = F_REPORT
+                cell_diff.fill = FILL_PASS
+                if cc.status == 'fail':
+                    cell_diff.font = Font(name='Consolas', size=9, bold=True,
+                                          color='C00000')
+                elif cc.status != 'pass':
+                    cell_diff.font = Font(name='Consolas', size=9, color='B25E00')
+                stats['report_cells'] += 1
+
+        for tc in tb_by_row.get((tm.ref.idx, r_idx), []):
+            if tc.period in tb_map:
+                tdcol = tb_map[tc.period]
+                raw_ref = raw.ref(tc.tb_sheet, tc.tb_rows, tc.tb_cols) if raw else None
+                note_ref = f'{get_column_letter(tc.note_col + COL_OFF)}{row_ptr}'
+                formula = (f'={note_ref}-{raw_ref}' if raw_ref
+                           else f'={note_ref}-{tc.tb_value}')
+                cell_diff = ws.cell(row_ptr, tdcol, formula)
+                cell_diff.number_format = FMT_AMOUNT
+                cell_diff.border = BORDER
+                cell_diff.font = F_REPORT
+                cell_diff.fill = (FILL_PASS if tc.status == 'pass'
+                                  else FILL_FAIL_TARGET if tc.status == 'fail'
+                                  else FILL_UNKNOWN)
+                stats['tb_cells'] += 1
+
+        row_ptr += 1
+
+        vert_items = []
+        for item in checks_by_row.get(r_idx, []):
+            if item.rule_id in check_cols:
+                # 横向勾稽：写在本行右侧的新列里，不插行
+                _write_horiz_cell(ws, item, src_to_dst, results_by_key,
+                                  row_ptr - 1, check_cols[item.rule_id],
+                                  stats, global_rows, check_rows)
+            else:
+                vert_items.append(item)
+        if vert_items:
+            # 同一个目标行的纵向勾稽合并成**一行**，各自写在自己的列
+            row_ptr = _write_check_group(ws, vert_items, src_to_dst,
+                                         results_by_key, row_ptr, stats,
+                                         global_rows, check_rows)
 
     # 有差异的表：标题行标红，一眼能扫到哪张表有问题
     try:
