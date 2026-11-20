@@ -18,8 +18,9 @@ import openpyxl                       # noqa: E402
 import report_reader as rr            # noqa: E402
 import report_items as ri             # noqa: E402
 
+# 类别名与人工分类表（报表项目分类.xlsx）保持完全一致，不自造同义词
 KIND_NAME = {'line': '报表项目', 'sub': '子项', 'total': '合计项',
-             'section': '分段标题', 'template': '模板行'}
+             'title': '分类标题', 'template': '模板行'}
 
 
 def main():

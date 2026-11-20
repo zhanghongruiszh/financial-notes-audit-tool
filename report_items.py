@@ -76,7 +76,7 @@ def classify(name, prev_line=None):
             return 'sub', prev_line
         return 'sub', terms.parent_of(name) or prev_line
     if cls == '分类标题':
-        return 'section', None
+        return 'title', None
 
     if terms.is_total(name):
         return 'total', None
@@ -87,7 +87,7 @@ def classify(name, prev_line=None):
         return 'sub', '其他综合收益'
     text = str(name or '').strip()
     if text.endswith((':', '：')) and len(text) <= 12:
-        return 'section', None      # 「流动资产:」这类分段小标题
+        return '分类标题', None      # 「流动资产：」这类分类标题
     if text.startswith(('其中', '减：', '减:', '加：', '加:')):
         return 'sub', prev_line
     return 'line', None
@@ -110,7 +110,8 @@ def ordered_items(book, wb=None):
     """把三张表规范化成一条有序的处理清单。
 
     顺序：工作表（资产负债表→利润表→现流表→权益表）→ 左段→右段 → 行号
-    分类：合计项 / 报表项目 / 子项 / 分段标题 / 模板行
+    分类代码：total / line / sub / title / template，
+    显示名与人工分类表一致（合计项 / 报表项目 / 子项 / 分类标题）
       · 合计项只看术语表（营业总收入、营业总成本、资产总计…）
       · 子项优先看术语表里的 SUB_ITEMS（实收资本净额、利息费用、OCI 各子项…），
         其次看行名前缀「其中/加：/减：」
@@ -140,7 +141,7 @@ def ordered_items(book, wb=None):
                     continue
                 if text.endswith((':', '：')) and len(text) <= 12:
                     out.append(ReportItem(sheet.name, item_col, row, item_col,
-                                          name, 'section', None, order))
+                                          name, 'title', None, order))
                     order += 1
                     continue
                 kind, parent = classify(name, prev_line)
