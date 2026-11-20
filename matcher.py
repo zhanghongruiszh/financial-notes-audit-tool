@@ -25,6 +25,26 @@ import re
 import report_items as ri
 
 
+
+
+# 通用别名：报表项目名 → Word 小节名里的关键字
+# （会计准则口径决定的，不是某个项目的特例）
+BUILTIN_ALIAS = {
+    '经营活动产生的现金流量净额': '现金流量表补充资料',
+    '其他综合收益': '其他综合收益',
+    '其他综合收益的税后净额': '其他综合收益',
+    '(一)不能重分类进损益的其他综合收益': '其他综合收益',
+    '(二)将重分类进损益的其他综合收益': '其他综合收益',
+    '权益法下不能转损益的其他综合收益': '其他综合收益',
+    '权益法下可转损益的其他综合收益': '其他综合收益',
+    '其他权益工具投资公允价值变动': '其他综合收益',
+    '金融资产重分类计入其他综合收益的金额': '其他综合收益',
+    '其他债权投资公允价值变动': '其他综合收益',
+    '其他债权投资信用减值准备': '其他综合收益',
+    '现金流量套期储备': '其他综合收益',
+    '外币财务报表折算差额': '其他综合收益',
+}
+
 def _norm(text):
     s = re.sub(r'[（(][^）)]*[）)]', '', str(text or ''))
     s = re.sub(r'\s+', '', s)
@@ -57,6 +77,22 @@ def _tables_by_sub(model):
             for tm in sub.tables:
                 out.setdefault(sub.name, []).append(tm)
     return out
+
+
+def _find_row_by_name(tm, name):
+    """在表里按行名找行（去掉"其中/加/减"前缀、去括号后互含）。"""
+    n = _norm(name)
+    if not n:
+        return None
+    rows = [r for r in tm.rows
+            if r.kind in ('detail', 'subtotal', 'total') and r.label]
+    exact = [r for r in rows if _norm(r.label) == n]
+    if exact:
+        return exact[0]
+    part = [r for r in rows if n in _norm(r.label) or _norm(r.label) in n]
+    if part:
+        return min(part, key=lambda r: len(_norm(r.label)))
+    return None
 
 
 def _pick_total_row(tm):
@@ -112,6 +148,11 @@ def match_all(book, model, number_index=None, item_map=None,
     for it in ri.ordered_items(book):
         if it.kind not in ('line', 'sub'):
             continue
+        # 通用规则：现金流量表只有"经营活动产生的现金流量净额"与附注勾，
+        # 其余子项走 TB 核对，不在这里匹配
+        if (str(it.sheet).startswith('现金流量表')
+                and '经营活动产生的现金流量净额' not in it.name):
+            continue
 
         target = it.name
         how = '名称'
@@ -120,6 +161,12 @@ def match_all(book, model, number_index=None, item_map=None,
             target = it.parent
 
         sub_name = _find_by_name(target, sub_names)
+        if sub_name is None:
+            hint = BUILTIN_ALIAS.get(_norm(target)) or BUILTIN_ALIAS.get(target)
+            if hint:
+                sub_name = _find_by_name(hint, sub_names)
+                if sub_name:
+                    how = '别名'
         if sub_name is None and item_map.get(_norm(target)):
             sub_name = _find_by_name(item_map[_norm(target)], sub_names)
             how = '别名'
@@ -141,7 +188,12 @@ def match_all(book, model, number_index=None, item_map=None,
             unmatched.append(it)
             continue
         tm = tables[0]
-        row = _pick_total_row(tm)
+        row = None
+        if it.kind == 'sub':
+            # 子项要落到标题下表格里的**同名行**
+            row = _find_row_by_name(tm, it.name)
+        if row is None:
+            row = _pick_total_row(tm)
         if row is None:
             unmatched.append(it)
             continue
