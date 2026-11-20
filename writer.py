@@ -888,7 +888,7 @@ def _block_header(ws, row, title, headers, widths=None):
 
 
 def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
-                       tb_checks=None):
+                       tb_checks=None, disclosure=None):
     """二、报表项目逐项勾稽：每个报表项目一行，写清金额、是否勾稽、是否一致。
 
     汇总表允许贴金额（看得清楚）；勾稽底稿不贴，只留公式。
@@ -922,6 +922,8 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
         child_names = _rel.child_items(book, report)
     except Exception:
         child_names = set()
+
+    undisclosed = {getattr(it, 'item_name', '') for it in (disclosure or [])}
 
     by_row = {}
     for cc in (cross or []):
@@ -1011,6 +1013,9 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
             # 勾稽正常的不在汇总表占行——这里只列"要人看的"
             if state not in ('有差异', '待确认') and flag != '未勾稽':
                 continue
+            # 已列入"未披露"的，状态直接写未披露，不再重复显示未勾稽
+            if flag == '未勾稽' and name in undisclosed:
+                flag, state = '未披露', ''
             # 只是子项（其中/减：/加：），不是报表项目，不算未勾稽
             if flag == '未勾稽' and name in child_names:
                 continue
@@ -1091,7 +1096,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
                          tb_count, nn_count, nx_count, disclosure_count,
                          source_note='', check_rows=None, note_rows=None,
                          cross=None, tb_checks=None, note_cross=None,
-                         report=None, note_no_checks=None):
+                         report=None, note_no_checks=None, disclosure=None):
     ws.cell(1, 1, '勾稽汇总表').font = Font(name='微软雅黑', size=14, bold=True, color='1F497D')
     r = 3
 
@@ -1156,7 +1161,7 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
 
     # 二、报表项目逐项勾稽（参考移植前看板：先逐项列清）
     r = _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
-                           tb_checks=tb_checks)
+                           tb_checks=tb_checks, disclosure=disclosure)
 
     # 三、差异明细（带跳转链接，点一下跳到底稿对应位置）
     r = _block_header(ws, r, '三、差异明细（点「定位」可跳转到勾稽底稿对应位置）',
@@ -1543,7 +1548,8 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
                          len(disclosure or []), source_note=source_note,
                          check_rows=check_rows, note_rows=note_rows,
                          cross=cross, tb_checks=tb_checks, note_cross=note_cross,
-                         report=report, note_no_checks=note_no_checks)
+                         report=report, note_no_checks=note_no_checks,
+                         disclosure=disclosure)
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
                            note_no_checks, note_cross, anomalies)
 

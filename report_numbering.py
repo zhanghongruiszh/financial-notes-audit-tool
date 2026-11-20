@@ -49,29 +49,22 @@ REPORT_ITEM_ALIAS = {
 #   · 营业总收入/营业总成本：本质是合计行，附注不单独披露
 #   · 不能重分类进损益的其他综合收益：是「其他综合收益」的组成项
 #   · 国家资本：实收资本的子项，在实收资本一节里披露
-NO_NOTE_ITEMS = (
-    # 合计/汇总性质：不需要附注号
-    '营业总收入', '营业总成本',
-    '营业利润', '利润总额', '净利润',
-    '综合收益总额', '(一)持续经营净利润', '(二)终止经营净利润',
-    '持续经营净利润', '终止经营净利润',
-    '(一)不能重分类进损益的其他综合收益',
-    '(二)将重分类进损益的其他综合收益',
-    '国家资本',
-    # 实收资本的子项，编号与实收资本一致，不作为独立报表项目
-    '实收资本(或股本)净额',
-    '实收资本(或股本)',
-    '国有法人资本',
-    '集体资本',
-    '民营资本',
-    '外商资本',
-)
+# 不需要编附注号的项目 = 合计项 + 母项的子项
+# 统一由 report_item_terms 这张权威表判断，不再在这里零散枚举，
+# 避免把「营业总成本」（合计项）和「营业成本」（真报表项目）混为一谈。
+import report_item_terms as _terms
+
+NO_NOTE_ITEMS = tuple(_terms.TOTALS) + tuple(_terms.SUB_ITEMS)
 
 
 def is_no_note_item(name):
+    """合计项、以及母项的子项，都不单独编附注号。"""
+    if _terms.is_total(name):
+        return True
+    if _terms.parent_of(name) is not None:
+        return True
     key = rr.normalize_name(name)
-    return any(key == rr.normalize_name(w) or key.startswith(rr.normalize_name(w))
-               for w in NO_NOTE_ITEMS)
+    return any(key == rr.normalize_name(w) for w in NO_NOTE_ITEMS)
 
 
 def _chapter_prefix(chapter):
