@@ -158,3 +158,67 @@ def summarize(matches, unmatched, skipped=()):
         'no_money': len(skipped),
         'by_how': dict(Counter(m.how for m in matches)),
     }
+
+def to_cross_checks(book, model, wb, existing, number_index=None,
+                    tables=None):
+    """把匹配结果转成 cross_checks.CrossCheck，供主流程直接使用。
+
+    只补"现有勾稽没覆盖到、且报表有金额"的项目，不动已有结果。
+    """
+    import rules
+    import cross_checks as cc
+
+    covered = {(c.sheet, c.rows) for c in (existing or []) if c.sheet}
+    # 用分析后的表模型（带 rows/columns）替换原始表引用
+    if tables:
+        by_sub = {}
+        for tm in tables:
+            by_sub.setdefault(tm.sub_item, []).append(tm)
+        for ch in model.chapters:
+            for sub in ch.sub_items:
+                sub.tables = by_sub.get(sub.name, [])
+    matches, _un, _sk = match_all(book, model, number_index=number_index)
+    by_item = {id(m.item): m for m in matches}
+
+    out = []
+    for it in ri.ordered_items(book):
+        if it.kind not in ('line', 'sub'):
+            continue
+        if (it.sheet, it.row) in covered:
+            continue
+        hit = by_item.get(id(it))
+        if hit is None:
+            continue
+        sheet = next((s for s in book.sheets if s.name == it.sheet), None)
+        if sheet is None:
+            continue
+        cols = sheet.blocks.get(it.block) or {}
+        grid = _grid(model, hit.table_idx)
+        if not grid:
+            continue
+        for col, period in cols.items():
+            v = wb[it.sheet].cell(it.row, col).value
+            if not isinstance(v, (int, float)) or abs(float(v)) < 0.005:
+                continue
+            ncol = hit.cols.get(period)
+            if ncol is None:
+                continue
+            nv = rules.cell_number(grid, hit.row, ncol)
+            if nv is None:
+                continue
+            out.append(cc.CrossCheck(
+                chapter='', scope='', sub_item=hit.sub_item, name=it.name,
+                period=period, period_key=None, note_value=nv, note_ref='',
+                sheet=it.sheet, rows=it.row, cols=col,
+                note_table=hit.table_idx, note_row=hit.row, note_col=ncol,
+                note_terms=[(hit.row, ncol, 1)], basis='匹配层'))
+    return out
+
+
+def _grid(model, table_idx):
+    for ch in model.chapters:
+        for sub in ch.sub_items:
+            for tm in sub.tables:
+                if tm.ref.idx == table_idx:
+                    return tm.ref.grid
+    return []
