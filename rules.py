@@ -187,7 +187,8 @@ def evaluate(item, table_model, tables_by_idx=None):
 
     actual = cell_number(grid, item.target_row, item.target_col)
     if actual is None:
-        return CheckResult(item, expected, None, None, 'skip', '目标格不是数字')
+        # 空白视为 0：空模板/无金额的表也要有公式勾稽（0 = 0 即平）
+        actual = 0.0
     diff = actual - expected
 
     # 口径不唯一时（重分类方向、前五名分母选哪张表），先试备选口径
@@ -625,7 +626,14 @@ def _rule_v_sum(tm, checks):
       · 所有列都对不上 → 真的平不了（红色差异）
     """
     grid = tm.ref.grid
+    # 有些表（如按公司横向分列的投资明细）没有 total 行，只有「资产合计」这类小计；
+    # 分段式资产表的小计（账面原值合计/累计折旧合计…）不能当加总行，要排除
+    SEGMENT_WORDS = ('原值', '原价', '折旧', '摊销', '净值', '减值', '账面价值')
     totals = [r for r in tm.rows if r.kind == 'total']
+    if not totals:
+        totals = [r for r in tm.rows
+                  if r.kind == 'subtotal' and '合计' in (r.label or '')
+                  and not any(w in (r.label or '') for w in SEGMENT_WORDS)]
     if not totals:
         return
     cols = _data_columns(tm, include_ratio=False)
