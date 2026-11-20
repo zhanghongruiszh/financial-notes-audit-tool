@@ -542,6 +542,19 @@ def _rule_asset_blocks(tm, checks):
 
     for c in _data_columns(tm):
         if net is not None:
+            # 原值、折旧都有数，净值这一列却是空的 → 净值漏填，必须报
+            g = cell_number(tm.ref.grid, gross.row, c.index + 1)
+            d = cell_number(tm.ref.grid, dep.row, c.index + 1)
+            if g and d and not cell_number(tm.ref.grid, net.row, c.index + 1):
+                checks.append(CheckItem(
+                    rule_id='R-ABLK', level='hard',
+                    chapter=tm.chapter, sub_item=tm.sub_item,
+                    table_idx=tm.ref.idx,
+                    label=f'账面净值漏填（{c.header_text or "列"}）',
+                    target_row=net.row, target_col=c.index + 1,
+                    terms=[Term(+1, gross.row, c.index + 1),
+                           Term(-1, dep.row, c.index + 1)],
+                ))
             # 净值/价值那几行只有期初、期末有数，增加/减少列是空的 → 跳过
             if net.kind and cell_number(tm.ref.grid, net.row, c.index + 1):
                 checks.append(CheckItem(
