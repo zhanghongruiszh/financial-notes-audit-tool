@@ -50,6 +50,7 @@ class DisclosureItem:
     row: int
     item_name: str
     amounts: dict = field(default_factory=dict)   # {date: value}
+    item_col: int = 0        # 所在分栏（资产负债表左右两栏分开排序）
     matched: str = ''
     status: str = 'missing'
     note: str = ''
@@ -141,8 +142,11 @@ def build_disclosure_checks(report_path, book, model):
         for key, (row, item_col) in sheet.items.items():
             col_rows.setdefault(item_col, []).append(row)
         skip_rows = set()
-        for item_col, rows in col_rows.items():
-            skip_rows |= _sub_item_rows(ws, rows, item_col)
+        # 只有资产负债表才把「其中/缩进」当子项跳过；
+        # 利润表里「税金及附加」这类是正式报表项目，必须参与未披露判断
+        if '资产负债表' in sheet.name:
+            for item_col, rows in col_rows.items():
+                skip_rows |= _sub_item_rows(ws, rows, item_col)
 
         seen = set()
         for key, (row, item_col) in sheet.items.items():

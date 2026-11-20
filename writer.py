@@ -111,8 +111,8 @@ def _col_map(periods, base=None):
     tb = {}
     for i, p in enumerate(periods):
         report[p] = start + i
-        tb_base = start + len(periods) + TB_COL_START_OFFSET
-        tb[p] = tb_base + i
+        # TB 勾稽与报表勾稽共用同一组列（同一张表只会有其中一种）
+        tb[p] = start + i
     return report, tb
 
 
@@ -887,7 +887,8 @@ def _block_header(ws, row, title, headers, widths=None):
 
 
 
-def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
+def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
+                       tb_checks=None):
     """二、报表项目逐项勾稽：每个报表项目一行，写清金额、是否勾稽、是否一致。
 
     汇总表允许贴金额（看得清楚）；勾稽底稿不贴，只留公式。
@@ -1057,6 +1058,29 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats):
                         ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
             r += 1
 
+    # 现金流量表与 TB 的差异也进汇总表，并链接到底稿
+    for tc in (tb_checks or []):
+        if getattr(tc, 'status', '') != 'fail':
+            continue
+        seq += 1
+        vals = [seq, f'{tc.label}（TB）', '', '', None, None,
+                getattr(tc, 'diff', None)]
+        for i, v in enumerate(vals, 1):
+            cell = ws.cell(r, i, v)
+            cell.font = F_BODY
+            cell.border = BORDER
+        ws.cell(r, 7).fill = FILL_FAIL_TARGET
+        ws.cell(r, col_state, '有差异')
+        target = (note_rows or {}).get((tc.table_idx, tc.note_row))
+        if target:
+            cell = ws.cell(r, col_link, f'勾稽底稿!A{target}')
+            cell.font = Font(name='微软雅黑', size=9, color='0563C1',
+                             underline='single')
+            from openpyxl.worksheet.hyperlink import Hyperlink
+            cell.hyperlink = Hyperlink(
+                ref=cell.coordinate, location=f"'勾稽底稿'!A{target}")
+        r += 1
+
     ws.cell(r, 1, f'小计：共勾稽 {n + ok} 项，其中一致 {ok}、有差异 {bad}；'
                   f'下方只列需要关注的 {seq} 项').font = F_HEADER
     r += 2
@@ -1131,7 +1155,8 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
     r += 2
 
     # 二、报表项目逐项勾稽（参考移植前看板：先逐项列清）
-    r = _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats)
+    r = _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
+                           tb_checks=tb_checks)
 
     # 三、差异明细（带跳转链接，点一下跳到底稿对应位置）
     r = _block_header(ws, r, '三、差异明细（点「定位」可跳转到勾稽底稿对应位置）',
@@ -1270,7 +1295,17 @@ def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross, anomalies
         c.alignment = Alignment(horizontal='center')
         c.border = BORDER
     r += 1
-    for n, it in enumerate(disclosure or [], 1):
+    # 分段排序：资产（左栏）→ 负债权益（右栏）→ 利润表 → 现金流量表
+    _SHEET_ORDER = ('资产负债表', '利润表', '现金流量表')
+
+    def _sort_key(it):
+        nm = str(getattr(it, 'sheet', ''))
+        rank = next((i for i, x in enumerate(_SHEET_ORDER) if nm.startswith(x)),
+                    len(_SHEET_ORDER))
+        return (rank, getattr(it, 'item_col', 0) or 0, getattr(it, 'row', 0))
+
+    ordered = sorted(disclosure or [], key=_sort_key)
+    for n, it in enumerate(ordered, 1):
         vals = [n, it.sheet, it.row, it.item_name] + \
                [it.amounts.get(d) for d in periods] + ['待人工判断']
         for i, v in enumerate(vals, 1):
