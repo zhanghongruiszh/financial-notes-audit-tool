@@ -552,21 +552,22 @@ def _rule_asset_blocks(tm, checks):
                     terms=[Term(+1, gross.row, c.index + 1),
                            Term(-1, dep.row, c.index + 1)],
                 ))
-            # 净值行这一列是空的（Word 漏填）就退回"原值 − 折旧 − 减值"
-            has_net = bool(cell_number(tm.ref.grid, net.row, c.index + 1))
-            base = net if has_net else gross
+            # 注意：净值行**存在但为空**是"漏填"，必须报差异，不能拿别的口径替它算
+            # 只有整张表根本没有"净值"行时，才退回 原值 − 折旧 − 减值
+            has_net = True          # 结构上存在净值行
+            base = net
         else:
             has_net = False
             base = gross
         if not cell_number(tm.ref.grid, value.row, c.index + 1):
             continue
-        # 原值/折旧这两行在这一列没数，算不出账面价值，跳过
-        if not cell_number(tm.ref.grid, gross.row, c.index + 1) or \
-                not cell_number(tm.ref.grid, dep.row, c.index + 1):
+        # 账面价值这一列有数、但净值行是空的 → 这是"净额漏填"，必须报差异；
+        # 只有账面价值本身为空时才跳过（那一列本来就没有勾稽关系）
+        if not cell_number(tm.ref.grid, value.row, c.index + 1):
             continue
         terms = [Term(+1, base.row, c.index + 1)]
         if not has_net:
-            terms.append(Term(-1, dep.row, c.index + 1))   # 没有净值（或为空）就多减一次
+            terms.append(Term(-1, dep.row, c.index + 1))   # 整表没有净值行才多减一次
         if imp is not None:
             terms.append(Term(-1, imp.row, c.index + 1))
         checks.append(CheckItem(
