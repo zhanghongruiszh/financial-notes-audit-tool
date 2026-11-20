@@ -460,6 +460,10 @@ def build_cross_checks(model, tables, report, get_value=None):
             # 不是独立披露科目，不能拿它去和报表项目匹配
             if sub.name.startswith(('其中', '减：', '加：')):
                 continue
+            # 不是报表项目、也不是大标题的小节，不参与报表勾稽
+            if any(w in sub.name for w in ('不重要合营', '不重要联营',
+                                           '汇总信息', '不重要子公司')):
+                continue
             is_oci_group = sub.name.startswith('归属于')
             group = by_sub.get((ch.name, sub.name), [])
             names = _split_names(sub.name)
