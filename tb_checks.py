@@ -50,12 +50,29 @@ class TbCheck:
 
 
 def _is_cf_subitem(name):
-    return '现金流量表' in (name or '')
+    """只有「现金流量表补充资料」这张表与 TB 的 CF-Indirect 一一对应。
+
+    货币资金下的「可随时用于支付的银行存款」等，虽然名字像现流，
+    但它们属于货币资金附注，TB 的 CF 表里没有对应行，不能拿来勾。
+    """
+    n = name or ''
+    return '现金流量表' in n and '货币资金' not in n
+
+
+SYNONYMS = {
+    '资产减值损失': ['资产减值准备', '计提资产减值准备'],
+    '资产减值准备': ['资产减值损失'],
+}
 
 
 def _candidates(label):
     """给一个附注行文字，返回可尝试匹配的名字列表。"""
-    out = [label]
+    text = label.strip()
+    for pre in ('加：', '加:', '减：', '减:'):
+        if text.startswith(pre):
+            text = text[len(pre):]
+            break
+    out = [label] + SYNONYMS.get(label.strip(), []) + SYNONYMS.get(text, [])
     for key, alts in ALIAS.items():
         if key in label:
             out.extend(alts)
@@ -90,6 +107,13 @@ def build_tb_checks(model, tables, tb_sheets):
     out = []
     for tm in tables:
         if not _is_cf_subitem(tm.sub_item):
+            continue
+        # 只认"净利润调节表"：必须同时有净利润、经营活动现金流量净额两行。
+        # 「现金及现金等价物构成」那张小表（可随时用于支付的存款等）不在 TB 里，
+        # 不参与 TB 勾稽。
+        labels = [(r.label or '') for r in tm.rows]
+        if not (any('净利润' in l for l in labels)
+                and any('经营活动产生的现金流量净额' in l for l in labels)):
             continue
         for row in tm.rows:
             if row.kind != 'detail' or not row.label:

@@ -462,7 +462,8 @@ def build_cross_checks(model, tables, report, get_value=None):
                 continue
             # 不是报表项目、也不是大标题的小节，不参与报表勾稽
             if any(w in sub.name for w in ('不重要合营', '不重要联营',
-                                           '汇总信息', '不重要子公司')):
+                                           '汇总信息', '不重要子公司',
+                                           '受到限制', '受限资产')):
                 continue
             is_oci_group = sub.name.startswith('归属于')
             group = by_sub.get((ch.name, sub.name), [])
