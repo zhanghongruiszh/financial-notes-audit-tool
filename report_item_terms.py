@@ -105,14 +105,78 @@ _TOTAL_KEYS = {_norm(k) for k in TOTALS}
 _SUB_KEYS = {_norm(k): v for k, v in SUB_ITEMS.items()}
 
 
+
+
+# ---------------------------------------------------------------- 权威分类表
+# 由人工整理的《报表项目分类.xlsx》导入（规则库/report_item_classes.json）：
+#   分类标题 / 报表项目 / 子项 / 合计项
+# 查表优先，查不到再走下面的启发式规则。
+_CLASS_CACHE = None
+
+
+def _load_classes():
+    global _CLASS_CACHE
+    if _CLASS_CACHE is not None:
+        return _CLASS_CACHE
+    import json
+    import os
+    import sys
+    base = (os.path.dirname(os.path.abspath(sys.executable))
+            if getattr(sys, 'frozen', False)
+            else os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base, '规则库', 'report_item_classes.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            raw = json.load(f)
+        _CLASS_CACHE = {k: v.get('class') for k, v in (raw.get('items') or {}).items()}
+    except Exception:
+        _CLASS_CACHE = {}
+    return _CLASS_CACHE
+
+
+def class_of(name):
+    """人工分类表里的类别：分类标题 / 报表项目 / 子项 / 合计项（没有则 None）。
+
+    查表时做几层兜底：原名 → 去掉「其中：/加：/减：」前缀 → 包含匹配（唯一才用）。
+    """
+    table = _load_classes()
+    if not table:
+        return None
+    key = _norm(name)
+    if key in table:
+        return table[key]
+    stripped = key
+    for pre in ('其中', '加', '减'):
+        if stripped.startswith(pre):
+            stripped = stripped[len(pre) + 1:] if len(stripped) > len(pre) else stripped
+    if stripped in table:
+        return table[stripped]
+    # 包含匹配：唯一命中才用，避免歧义
+    hits = {k: v for k, v in table.items() if stripped and stripped in k}
+    if len(hits) == 1:
+        return next(iter(hits.values()))
+    prefix_hits = {k: v for k, v in table.items() if stripped and k in stripped}
+    if len(prefix_hits) == 1:
+        return next(iter(prefix_hits.values()))
+    return None
+
+
 def is_total(name):
-    """是不是合计项。"""
+    """是不是合计项（人工分类表优先）。"""
+    c = class_of(name)
+    if c is not None:
+        return c == '合计项'
     return _norm(name) in _TOTAL_KEYS
 
 
 def parent_of(name):
     """如果是某项目的子项，返回母项名；否则 None。"""
     return _SUB_KEYS.get(_norm(name))
+
+
+def is_report_item(name):
+    """人工表判为"报表项目"的，一律当真项目。"""
+    return class_of(name) == '报表项目'
 
 
 def children_of(name):

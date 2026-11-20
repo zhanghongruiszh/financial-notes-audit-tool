@@ -60,7 +60,24 @@ class ReportItem:
 
 
 def classify(name, prev_line=None):
-    """判断一行是 报表项目 / 子项 / 合计项，以及子项的归属。"""
+    """判断一行是 报表项目 / 子项 / 合计项，以及子项的归属。
+
+    优先查**人工分类表**（规则库/report_item_classes.json），
+    查不到再走启发式。
+    """
+    cls = terms.class_of(name)
+    if cls == '合计项':
+        return 'total', None
+    if cls == '报表项目':
+        return 'line', None
+    if cls == '子项':
+        text = str(name or '').strip()
+        if text.startswith(('其中', '减：', '减:', '加：', '加:')):
+            return 'sub', prev_line
+        return 'sub', terms.parent_of(name) or prev_line
+    if cls == '分类标题':
+        return 'section', None
+
     if terms.is_total(name):
         return 'total', None
     parent = terms.parent_of(name)
@@ -113,7 +130,10 @@ def ordered_items(book, wb=None):
             prev_line = None
             for row, name in rows:
                 text = str(name or '').strip()
-                if text.startswith(('△', '▲', '☆', '#')):
+                # 人工分类表把 △/▲/☆ 这些也当作报表项目（只是本期无金额），
+                # 所以只有当分类表查不到时才退回"模板行"
+                if (text.startswith(('△', '▲', '☆', '#'))
+                        and terms.class_of(name) is None):
                     out.append(ReportItem(sheet.name, item_col, row, item_col,
                                           name, 'template', None, order))
                     order += 1
