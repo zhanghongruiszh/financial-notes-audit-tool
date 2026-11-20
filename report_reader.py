@@ -133,6 +133,7 @@ class ReportSheet:
     header_row: int = 0            # 1 基
     periods: Dict[int, object] = field(default_factory=dict)   # 列号(1基) -> date
     items: Dict[str, tuple] = field(default_factory=dict)      # 名称 -> (行号, 科目列)
+    raw_names: Dict[tuple, str] = field(default_factory=dict)  # (行号, 科目列) -> 原始行名
     blocks: Dict[int, Dict[int, int]] = field(default_factory=dict)  # 科目列 -> {列号: date}
 
     def period_columns(self):
@@ -310,17 +311,20 @@ def _read_sheet(ws, name):
     _rebuild_blocks(sheet, item_cols)
 
     data_start = sheet.header_row + 1
-    # 资产负债表的「其中：」只是明细拆分；利润表/现金流量表的
-    # 「其中：营业收入」「其中：营业成本」是正式报表项目，必须保留
-    skip = (_sub_item_rows(ws, item_cols, ws.max_row)
-            if '资产负债表' in sheet.name else set())
+    # 不再丢「其中：」行 —— 它们是报表的一部分，分类表会把它们标成"子项"。
+    # 以前在这里整行丢掉，导致子项（其中：应收利息、其中：应付利息…）
+    # 根本没进报表模型，和原始版对不上。
+    skip = set()
     for ic in item_cols:
         for r in range(data_start, ws.max_row + 1):
             if (r, ic) in skip:
                 continue          # 「其中：」子项，不是独立报表项目
-            key = normalize_name(ws.cell(r, ic).value)
+            raw = ws.cell(r, ic).value
+            key = normalize_name(raw)
             if key and key not in sheet.items:
                 sheet.items[key] = (r, ic)
+                if isinstance(raw, str):
+                    sheet.raw_names[(r, ic)] = raw.strip()
     sheet._item_cols = item_cols
     return sheet
 

@@ -124,8 +124,10 @@ def ordered_items(book, wb=None):
     order = 0
     for sheet in sheets:
         blocks = {}
+        raw_map = getattr(sheet, 'raw_names', {}) or {}
         for name, (row, item_col) in sheet.items.items():
-            blocks.setdefault(item_col, []).append((row, name))
+            display = raw_map.get((row, item_col)) or name
+            blocks.setdefault(item_col, []).append((row, display))
         _sheet_items_start = len(out)
         for item_col in sorted(blocks):
             rows = sorted(blocks[item_col])
