@@ -1431,6 +1431,32 @@ def _write_integrity_sheet(ws, disclosure, note_no_checks, note_cross, anomalies
 
 # ---------------------------------------------------------------- 入口
 
+
+
+def _copy_source_sheets(wb, report, src_path):
+    """把三张报表原文原样附到成果里（资产负债表 / 利润表 / 现金流量表）。
+
+    原始版成果就有这三个 sheet，用来对照底稿，去掉后不好对账。
+    """
+    import openpyxl
+    try:
+        src = openpyxl.load_workbook(src_path, data_only=True)
+    except Exception:
+        return
+    for sheet in getattr(report, 'sheets', []):
+        if sheet.name not in src.sheetnames:
+            continue
+        ssrc = src[sheet.name]
+        dst = wb.create_sheet(sheet.name)
+        for row in ssrc.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
+                dst.cell(cell.row, cell.column, cell.value)
+        for col, dim in ssrc.column_dimensions.items():
+            if dim.width:
+                dst.column_dimensions[col].width = dim.width
+
 def write_workbook(out_path, model, tables, checks, results, cross=None,
                    report=None, tb_checks=None, tb_xlsx=None,
                    note_no_checks=None, disclosure=None, note_cross=None,
@@ -1553,8 +1579,15 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
     _write_integrity_sheet(wb.create_sheet('完整性'), disclosure,
                            note_no_checks, note_cross, anomalies)
 
-    # 工作表顺序：汇总表 → 勾稽底稿 → 完整性 → 原始数据
-    order = ['汇总表', '勾稽底稿', '完整性', RawData.SHEET_NAME]
+    # 三张报表原文（与原始版成果一致，方便对照）
+    try:
+        _copy_source_sheets(wb, report, report.path)
+    except Exception:
+        pass
+
+    # 工作表顺序：汇总表 → 勾稽底稿 → 完整性 → 原始数据 → 三张报表原文
+    order = (['汇总表', '勾稽底稿', '完整性', RawData.SHEET_NAME]
+             + [sh.name for sh in (report.sheets or [])])
     wb._sheets.sort(key=lambda sh: order.index(sh.title)
                     if sh.title in order else len(order))
     wb.save(out_path)
