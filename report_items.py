@@ -76,19 +76,35 @@ def classify(name, prev_line=None):
     return 'line', None
 
 
-def ordered_items(book):
+def _raw_indent(wb, sheet_name, row, col):
+    """读原始单元格文字的缩进（Word/Excel 里靠前导空格表示层级）。"""
+    if wb is None or sheet_name not in getattr(wb, 'sheetnames', []):
+        return 0
+    try:
+        raw = wb[sheet_name].cell(row, col).value
+    except Exception:
+        return 0
+    if not isinstance(raw, str):
+        return 0
+    return len(raw) - len(raw.lstrip())
+
+
+def ordered_items(book, wb=None):
     """把三张表规范化成一条有序的处理清单。
 
-    返回 [ReportItem]：
-      · 先按 SHEET_ORDER 排工作表（不依赖文件里的物理顺序）
-      · 每张表先左段（项目列靠左）再右段
-      · 段内按行号从上到下
+    顺序：工作表（资产负债表→利润表→现流表→权益表）→ 左段→右段 → 行号
+    分类：合计项 / 报表项目 / 子项 / 分段标题 / 模板行
+      · 合计项只看术语表（营业总收入、营业总成本、资产总计…）
+      · 子项优先看术语表里的 SUB_ITEMS（实收资本净额、利息费用、OCI 各子项…），
+        其次看行名前缀「其中/加：/减：」
+      · 其余都是报表项目
+    缩进在客户文件里并不可靠（营业成本缩进 3、税金及附加缩进 9，
+    但它们是同级），所以**不用缩进推断层级**，一律以术语表为准。
     """
     out = []
     sheets = sorted(book.sheets, key=lambda s: sheet_rank(s.name))
     order = 0
     for sheet in sheets:
-        # 分栏：按项目列号分组，左段在前
         blocks = {}
         for name, (row, item_col) in sheet.items.items():
             blocks.setdefault(item_col, []).append((row, name))
@@ -96,6 +112,17 @@ def ordered_items(book):
             rows = sorted(blocks[item_col])
             prev_line = None
             for row, name in rows:
+                text = str(name or '').strip()
+                if text.startswith(('△', '▲', '☆', '#')):
+                    out.append(ReportItem(sheet.name, item_col, row, item_col,
+                                          name, 'template', None, order))
+                    order += 1
+                    continue
+                if text.endswith((':', '：')) and len(text) <= 12:
+                    out.append(ReportItem(sheet.name, item_col, row, item_col,
+                                          name, 'section', None, order))
+                    order += 1
+                    continue
                 kind, parent = classify(name, prev_line)
                 out.append(ReportItem(sheet.name, item_col, row, item_col,
                                       name, kind, parent, order))
