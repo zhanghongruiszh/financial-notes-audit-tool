@@ -223,7 +223,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                    any(k[0] == tm.ref.idx for k in (tb_by_row or {})))
     for pp in (periods if show_title else []):
         hc = ws.cell(row_ptr - 1, report_map[pp],
-                     f'【报表差额: {pp}】')
+                     f'【报表勾稽: {pp}】')
         hc.font = F_REPORT
         hc.fill = FILL_REPORT_HDR
         hc.alignment = Alignment(horizontal='center')

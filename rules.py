@@ -599,6 +599,9 @@ def _rule_asset_blocks(tm, checks):
         # 只有账面价值本身为空时才跳过（那一列本来就没有勾稽关系）
         if not cell_number(tm.ref.grid, value.row, c.index + 1):
             continue
+        # 净值行为空时，"漏填"已经单独报过，这里不再重复报价值不符
+        if net is not None and not cell_number(tm.ref.grid, net.row, c.index + 1):
+            continue
         terms = [Term(+1, base.row, c.index + 1)]
         if not has_net:
             terms.append(Term(-1, dep.row, c.index + 1))   # 整表没有净值行才多减一次
