@@ -1415,6 +1415,37 @@ def _rule_ecl(tm, checks):
         ))
 
 
+# 整段不做表内勾稽的子项目（按用户口径）
+SKIP_SUB_EXACT = {'租赁'}
+SKIP_SUB_WORDS = ('不重要合营', '不重要联营', '不重要子', '汇总信息')
+
+
+def _skip_table(tm):
+    """这些表不做表内勾稽：
+
+      · 「不重要合营企业和联营企业的汇总信息」这类汇总表 —— 只与报表勾
+      · 「租赁」整个段落 —— 定性披露为主
+      · 只有一个数据行的表 —— 除了和报表勾没有别的公式
+    """
+    name = str(getattr(tm, 'sub_item', '') or '')
+    if name in SKIP_SUB_EXACT:
+        return True
+    if any(w in name for w in SKIP_SUB_WORDS):
+        return True
+    details = [r for r in tm.rows
+               if r.kind in ('detail', 'subtotal', 'total') and r.label]
+    has_total = any(r.kind in ('total', 'subtotal') for r in tm.rows)
+    # 真正的"单格表"：只有一个数据格（一行一列），才没有表内勾稽可言
+    cells = 0
+    for r in details:
+        for c in tm.columns:
+            if c.is_data and cell_number(tm.ref.grid, r.row, c.index + 1):
+                cells += 1
+    if cells <= 1 and not has_total:
+        return True
+    return False
+
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
@@ -1432,6 +1463,8 @@ def build_checks(tables):
         _rule_block_move(tm, checks)
         _rule_prov_move(tm, checks)
         _rule_ecl(tm, checks)
+        if _skip_table(tm):
+            continue
         _rule_sum_down(tm, checks)
         _rule_asset_blocks(tm, checks)
         _rule_lease(tm, checks)
