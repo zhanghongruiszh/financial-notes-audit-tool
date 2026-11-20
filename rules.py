@@ -1446,6 +1446,49 @@ def _skip_table(tm):
     return False
 
 
+
+
+def _rule_restricted_money(tables, checks):
+    """受限资产表里若有「货币资金」这一行，
+    该行金额应与「货币资金」项目下受限子表的合计数一致。
+    """
+    def find_row(tm, *words):
+        for r in tm.rows:
+            if r.kind in ('detail', 'subtotal', 'total') and r.label:
+                if all(w in r.label for w in words):
+                    return r
+        return None
+
+    money_tables = [t for t in tables if '货币资金' in str(t.sub_item)]
+
+    for tm in tables:
+        if '受限' not in str(tm.sub_item):
+            continue
+        row = find_row(tm, '货币资金')
+        if row is None:
+            continue
+        # 货币资金项目下、含"受限/监管/冻结"的那张表
+        src = None
+        for mt in money_tables:
+            hits = [r for r in mt.rows if r.label and any(
+                w in r.label for w in ('受限', '监管', '冻结', '涉诉'))]
+            if hits:
+                src = mt
+                break
+        if src is None:
+            continue
+        total = find_row(src, '合计')
+        if total is None:
+            continue
+        for c in _data_columns(tm):
+            checks.append(CheckItem(
+                rule_id='R-RESTRICT', level='hard',
+                chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                label='受限货币资金 = 货币资金受限子表合计',
+                target_row=row.row, target_col=c.index + 1,
+                terms=[Term(+1, total.row, c.index + 1, table_idx=src.ref.idx)],
+            ))
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
@@ -1470,6 +1513,10 @@ def build_checks(tables):
         _rule_lease(tm, checks)
         _rule_tax_split(tm, checks)
         _rule_pct(tm, checks, siblings)
+    try:
+        _rule_restricted_money(tables, checks)
+    except Exception:
+        pass
     return checks
 
 
