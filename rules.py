@@ -517,6 +517,47 @@ def _rule_tax_split(tm, checks):
         ))
 
 
+
+def _rule_lease(tm, checks):
+    """租赁负债：净额 = 租赁付款额 − 未确认的融资费用 − 重分类至一年内到期。
+
+    只看行名，不依赖表类型（会计准则口径固定）。
+    """
+    rows = [r for r in tm.rows
+            if r.kind in ('detail', 'subtotal', 'total') and r.label]
+
+    def find(*words):
+        for r in rows:
+            if all(w in (r.label or '') for w in words):
+                return r
+        return None
+
+    pay = find('租赁付款额')
+    fee = find('未确认的融资费用')
+    # 三个要素必须齐：付款额 + 未确认融资费用（一年内到期可缺）
+    if pay is None or fee is None:
+        return
+    due = find('一年内到期')
+    net = find('净额') or find('租赁负债')
+
+    target = net if net is not None else None
+    if target is None:
+        return
+    for c in _data_columns(tm):
+        terms = [Term(+1, pay.row, c.index + 1)]
+        if fee is not None:
+            terms.append(Term(-1, fee.row, c.index + 1))
+        if due is not None:
+            terms.append(Term(-1, due.row, c.index + 1))
+        checks.append(CheckItem(
+            rule_id='R-LEASE', level='hard',
+            chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+            label=f'租赁负债净额 = 付款额 − 未确认融资费用 − 一年内到期（{c.header_text or "列"}）',
+            target_row=target.row, target_col=c.index + 1,
+            terms=terms,
+        ))
+
+
 def _rule_asset_blocks(tm, checks):
     """固定资产/无形资产/使用权资产这类"分段式"表的纵向加减：
 
@@ -1393,6 +1434,7 @@ def build_checks(tables):
         _rule_ecl(tm, checks)
         _rule_sum_down(tm, checks)
         _rule_asset_blocks(tm, checks)
+        _rule_lease(tm, checks)
         _rule_tax_split(tm, checks)
         _rule_pct(tm, checks, siblings)
     return checks
