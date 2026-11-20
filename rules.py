@@ -1063,7 +1063,9 @@ def _rule_pct(tm, checks, siblings=None):
             val = cell_number(other.ref.grid, tot.row, col.index + 1)
             if val is None:
                 continue
-            if best is None or abs(val) > abs(best[3]):
+            # 用户口径：占比分母取"该子项目**第一张**表的合计数"，
+            # 不是合计最大的那张（分类表合计可能比账龄表大，会算小占比）
+            if best is None or other.ref.idx < best[0].ref.idx:
                 best = (other, tot, col, val)
         return best[:3] if best else None
 
