@@ -537,10 +537,31 @@ def _rule_asset_blocks(tm, checks):
     net = find('净值')
     imp = find('减值准备')
     value = find('账面价值')
-    if not (gross and dep and value):
+
+    # 会计准则口径（不依赖表类型，只要有这几行就必须成立）：
+    #   账面净值 = 原值 − 累计折旧(摊销)
+    #   账面价值 = 账面净值 − 减值准备（减值没有也按 0 处理）
+    if not (gross and dep):
+        return
+    if value is None and net is None:
         return
 
     for c in _data_columns(tm):
+        if value is None:
+            # 只到净值这一层：原值 − 折旧 = 净值
+            g = cell_number(tm.ref.grid, gross.row, c.index + 1)
+            d = cell_number(tm.ref.grid, dep.row, c.index + 1)
+            if (g or d) and net is not None:
+                checks.append(CheckItem(
+                    rule_id='R-ABLK', level='hard',
+                    chapter=tm.chapter, sub_item=tm.sub_item,
+                    table_idx=tm.ref.idx,
+                    label=f'账面净值 = 原值 − 累计折旧(摊销)（{c.header_text or "列"}）',
+                    target_row=net.row, target_col=c.index + 1,
+                    terms=[Term(+1, gross.row, c.index + 1),
+                           Term(-1, dep.row, c.index + 1)],
+                ))
+            continue
         if net is not None:
             # 原值、折旧都有数，净值这一列却是空的 → 净值漏填，必须报
             g = cell_number(tm.ref.grid, gross.row, c.index + 1)
