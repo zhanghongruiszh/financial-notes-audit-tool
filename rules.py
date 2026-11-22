@@ -757,6 +757,7 @@ def _rule_v_sum(tm, checks):
                     break
             picks[c.index] = (found, flip)
 
+        cands = sorted(cands, key=len)
         any_found = any(v[0] for v in picks.values())
         for c in cols:
             if c.index not in picks:
@@ -771,9 +772,9 @@ def _rule_v_sum(tm, checks):
                 picked = cands[0]
                 flip = False
             elif any_found or len(cols) > 1:
-                # 别的列能对上、这列对不上；或者多列表里一列都没对上
-                # ——多半是行组没认准，标存疑，别硬判差异
-                level = 'unclear'
+                # 已经能给出期望值，就按差异报，让用户看到具体数，
+                # 不再用"结构存疑"兜底（用户明确不喜欢成片黄色）
+                level = 'hard'
                 picked = cands[0]
                 flip = False
             else:
@@ -840,9 +841,9 @@ def _rule_v_grp(tm, checks):
             child_sum = sum(row_sign(rows[r].label)
                             * (cell_number(tm.ref.grid, r, c.index + 1) or 0.0)
                             for r in children)
-            parent_val = cell_number(tm.ref.grid, parent_row, c.index + 1) or 0.0
-            # 子项在这一列全空、父行却有数：说明这一列的子项在别处，结构认不准
-            level = 'unclear' if (not child_sum and parent_val) else 'hard'
+            # 子项在别处（块外延续行）时，期望值按 0 算，直接报差异，
+            # 不再用黄色兜底
+            level = 'hard'
             terms = [Term(row_sign(rows[r].label), r, c.index + 1) for r in children]
             checks.append(CheckItem(
                 rule_id='V-GRP', level=level,
@@ -1670,6 +1671,52 @@ def _rule_split_move(tables, checks):
                     ))
         prev = tm
 
+
+
+# 递延所得税税率（企业所得税法定税率）
+DEFERRED_TAX_RATE = 0.25
+
+
+def _rule_deferred_tax(tm, checks):
+    """递延所得税：所得税金额 = 可抵扣/应纳税暂时性差异 × 25%。
+
+    表头成对出现：「递延所得税资产/负债」列 与「可抵扣/应纳税暂时性差异」列，
+    按期间前缀（期末/期初）配对。
+    """
+    cols = [c for c in tm.columns if c.is_data]
+    pairs = []
+    for i, c in enumerate(cols):
+        head = (c.header_text or '').replace(' ', '')
+        if '暂时性差异' not in head:
+            continue
+        # 同一期间前缀的"递延所得税"列
+        for d in cols:
+            h2 = (d.header_text or '').replace(' ', '')
+            if '递延所得税' not in h2:
+                continue
+            pre = head.split('可抵扣')[0].split('应纳税')[0]
+            if h2.startswith(pre):
+                pairs.append((d, c))
+                break
+    if not pairs:
+        return
+
+    for r in tm.rows:
+        if r.kind not in ('detail', 'subtotal', 'total') or not r.label:
+            continue
+        for tax_col, diff_col in pairs:
+            diff = cell_number(tm.ref.grid, r.row, diff_col.index + 1)
+            if not diff:
+                continue
+            checks.append(CheckItem(
+                rule_id='R-DTAX', level='hard',
+                chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                label=f'递延所得税 = 暂时性差异 × 25%（{r.label}）',
+                target_row=r.row, target_col=tax_col.index + 1,
+                terms=[Term(+DEFERRED_TAX_RATE, r.row, diff_col.index + 1)],
+                is_ratio=False,
+            ))
+
 def build_checks(tables):
     """对全部表生成勾稽校验。"""
     checks = []
@@ -1691,6 +1738,7 @@ def build_checks(tables):
             continue
         _rule_sum_down(tm, checks)
         _rule_asset_blocks(tm, checks)
+        _rule_deferred_tax(tm, checks)
         _rule_lease(tm, checks)
         _rule_tax_split(tm, checks)
         _rule_pct(tm, checks, siblings)
