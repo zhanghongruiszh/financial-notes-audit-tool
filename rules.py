@@ -738,6 +738,10 @@ def _rule_v_sum(tm, checks):
         picks = {}
         for c in cols:
             target = cell_number(grid, tot.row, c.index + 1)
+            if not target and c.role is None:
+                # 合计行这一列是空的，且这列本来就不是金额列（债券面值/日期/期限），
+                # 不算加总关系，不生成勾稽
+                continue
             found = None
             flip = False
             for cand in cands:
@@ -755,10 +759,17 @@ def _rule_v_sum(tm, checks):
 
         any_found = any(v[0] for v in picks.values())
         for c in cols:
+            if c.index not in picks:
+                continue
             found, flip = picks[c.index]
             if found is not None:
                 level = 'hard'
                 picked = found
+            elif not cell_number(grid, tot.row, c.index + 1):
+                # 合计行这一列是空的：按"一切合计都要做加减"的口径，算差异
+                level = 'hard'
+                picked = cands[0]
+                flip = False
             elif any_found or len(cols) > 1:
                 # 别的列能对上、这列对不上；或者多列表里一列都没对上
                 # ——多半是行组没认准，标存疑，别硬判差异
