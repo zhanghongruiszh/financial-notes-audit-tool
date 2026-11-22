@@ -821,6 +821,22 @@ def _rule_v_grp(tm, checks):
                 raw_text = ''
             if raw_text in ('——', '—', '--', '-', '–', '/'):
                 continue
+            # 有的表把子项写到"其中"块下面一格（合并格延续），
+            # 子项和为 0 而父行有数时，把紧跟块尾的下一行也试进来
+            kids = list(children)
+            csum0 = sum(row_sign(rows[r].label)
+                        * (cell_number(tm.ref.grid, r, c.index + 1) or 0.0)
+                        for r in kids)
+            pv0 = cell_number(tm.ref.grid, parent_row, c.index + 1) or 0.0
+            if not csum0 and pv0 and kids:
+                nxt = max(kids) + 1
+                if nxt < parent_row and nxt not in kids:
+                    kids.append(nxt)
+                    try:
+                        rows.setdefault(nxt, next(r for r in tm.rows if r.row == nxt))
+                    except StopIteration:
+                        kids.pop()
+            children = kids
             child_sum = sum(row_sign(rows[r].label)
                             * (cell_number(tm.ref.grid, r, c.index + 1) or 0.0)
                             for r in children)
