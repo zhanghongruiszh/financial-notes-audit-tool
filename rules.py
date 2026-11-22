@@ -1142,8 +1142,41 @@ def _rule_pct(tm, checks, siblings=None):
             continue
 
         if is_top5:
-            # 前五名表的占比分母是"该项目总额"，从同子项目主表的合计行取
-            found = base_table(period)
+            # 先用表内数据反推分母（金额 ÷ 占比），再去候选表里找最接近的那个：
+            # 详情表常把"账面余额合计"和"账面价值合计"并排列示，
+            # 占比用的是前者，光按期间选列会取错。
+            implied = None
+            for r0 in tm.rows:
+                if r0.kind not in ('detail', 'subtotal') or not r0.label:
+                    continue
+                amt0 = cell_number(tm.ref.grid, r0.row, base.index + 1)
+                pct0 = cell_number(tm.ref.grid, r0.row, rc.index + 1)
+                if amt0 and pct0:
+                    implied = amt0 / pct0
+                    break
+            found = None
+            if implied:
+                best = None
+                for other in (siblings or []):
+                    if other is tm or other.ref.idx >= tm.ref.idx:
+                        continue
+                    tot0 = next((r for r in other.rows
+                                 if r.kind in ('total', 'subtotal')), None)
+                    if tot0 is None:
+                        continue
+                    for c0 in other.columns:
+                        if not c0.is_data:
+                            continue
+                        v0 = cell_number(other.ref.grid, tot0.row, c0.index + 1)
+                        if not v0:
+                            continue
+                        d = abs(v0 - implied) / abs(implied)
+                        if best is None or d < best[0]:
+                            best = (d, other, tot0, c0)
+                if best and best[0] <= 0.01:
+                    found = (best[1], best[2], best[3])
+            if found is None:
+                found = base_table(period)
             if found is None:
                 continue
             other, other_tot, other_col = found
