@@ -667,6 +667,14 @@ def _rule_v_sum(tm, checks):
       · 所有列都对不上 → 真的平不了（红色差异）
     """
     grid = tm.ref.grid
+
+    # 带「税前 / 所得税 / 税后」三列的表（其他综合收益这类），
+    # 主要关系是横向的"税后 = 税前 − 所得税"；纵向合并不做，
+    # 否则分段小计会被误当加总行。
+    heads = [(c.header_text or '') for c in tm.columns if c.is_data]
+    if any('税前' in h for h in heads) and any('税后' in h for h in heads):
+        return
+
     # 有些表（如按公司横向分列的投资明细）没有 total 行，只有「资产合计」这类小计；
     # 分段式资产表的小计（账面原值合计/累计折旧合计…）不能当加总行，要排除
     SEGMENT_WORDS = ('原值', '原价', '折旧', '摊销', '净值', '减值', '账面价值')
