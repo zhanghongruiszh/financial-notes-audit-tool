@@ -1526,6 +1526,29 @@ def _rule_split_move(tables, checks):
                         and any(w in (c.header_text or '') for w in _SPLIT_DEC)]
                 a_rows = {(r.label or '').strip(): r for r in a.rows
                           if r.kind in ('detail', 'subtotal', 'total') and r.label}
+
+                # 整表验证（看总额，不看逐行）：所有行加总若不平，
+                # 说明这两张表根本不是"期初→期末"的关系，整对跳过。
+                # 逐行的偏差留待下面的检查去发现。
+                tot_end = tot_beg = tot_inc = tot_dec = 0.0
+                paired = 0
+                for rb in b.rows:
+                    if rb.kind not in ('detail', 'subtotal', 'total') or not rb.label:
+                        continue
+                    ra = a_rows.get((rb.label or '').strip())
+                    if ra is None:
+                        continue
+                    paired += 1
+                    tot_end += cell_number(b.ref.grid, rb.row, end.index + 1) or 0.0
+                    tot_beg += cell_number(a.ref.grid, ra.row, beg.index + 1) or 0.0
+                    for c in incs:
+                        tot_inc += cell_number(b.ref.grid, rb.row, c.index + 1) or 0.0
+                    for c in decs:
+                        tot_dec += cell_number(b.ref.grid, rb.row, c.index + 1) or 0.0
+                if paired < 2 or abs(tot_end - (tot_beg + tot_inc - tot_dec)) > 0.01:
+                    prev = tm
+                    continue
+
                 for rb in b.rows:
                     if rb.kind not in ('detail', 'subtotal', 'total') or not rb.label:
                         continue
@@ -1573,6 +1596,7 @@ def build_checks(tables):
         _rule_pct(tm, checks, siblings)
     try:
         _rule_restricted_money(tables, checks)
+        _rule_split_move(tables, checks)
     except Exception:
         pass
     return checks
