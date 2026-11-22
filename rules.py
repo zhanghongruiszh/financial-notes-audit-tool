@@ -683,6 +683,38 @@ def _rule_v_sum(tm, checks):
     for tot in totals:
         ref_col = _pick_ref_col(tm, tot.row, cols)
         cands = _candidate_blocks(tm, tot.row, ref_col)
+        # 补一个候选：只取"上一个合计行之后"的明细
+        # （负债合计 = 流动负债 + 非流动负债，不能把上面的资产段也算进来）
+        above = [r for r in tm.rows
+                 if r.row < tot.row and r.label]
+        tail = []
+        for r in reversed(above):
+            if r.kind in ('total', 'subtotal'):
+                break
+            if r.kind in ('detail', 'group'):
+                tail.append(r)
+        if tail:
+            tail = [r.row for r in reversed(tail)]
+            if tail not in cands:
+                cands = [tail] + list(cands)
+
+            # 「其中：xxx」组：组本身和紧跟其后的若干明细都是子项，
+            # 不能进合计。组后接几行不确定，逐个尝试，由数值验证挑。
+            group_pos = [i for i, r in enumerate(tm.rows)
+                         if r.row in tail and r.kind == 'group']
+            for gi in group_pos:
+                for k in range(0, 5):
+                    drop = {tm.rows[gi].row}
+                    j = gi + 1
+                    cnt = 0
+                    while j < len(tm.rows) and cnt < k:
+                        if tm.rows[j].row in tail:
+                            drop.add(tm.rows[j].row)
+                            cnt += 1
+                        j += 1
+                    variant = [x for x in tail if x not in drop]
+                    if variant and variant not in cands:
+                        cands.append(variant)
 
         legacy = _contribution_rows(tm, tot.row, ref_col)
         if legacy:
