@@ -588,7 +588,37 @@ def _rule_asset_blocks(tm, checks):
     if value is None and net is None:
         return
 
+    def _is_movement(c):
+        head = (c.header_text or '')
+        return any(w in head for w in ('增加', '减少', '重分类', '变动'))
+
+    # (12) 每段小计 = 其下明细之和（原值/折旧/减值/净值/价值 各自分段）
+    blocks = [r for r in tm.rows
+              if r.kind in ('total', 'subtotal') and r.label
+              and any(w in r.label for w in ('原值', '原价', '折旧', '摊销',
+                                             '净值', '减值', '账面价值'))]
+    detail_rows = [r for r in tm.rows
+                   if r.kind in ('detail', 'group') and r.label]
+    for i, blk in enumerate(blocks):
+        end_row = blocks[i + 1].row if i + 1 < len(blocks) else 10 ** 6
+        kids = [r for r in detail_rows if blk.row < r.row < end_row]
+        if len(kids) < 2:
+            continue
+        for c in _data_columns(tm):
+            if not cell_number(tm.ref.grid, blk.row, c.index + 1):
+                continue
+            checks.append(CheckItem(
+                rule_id='R-ABLK', level='hard',
+                chapter=tm.chapter, sub_item=tm.sub_item, table_idx=tm.ref.idx,
+                label=f'{blk.label} = 其下 {len(kids)} 项之和（{c.header_text or "列"}）',
+                target_row=blk.row, target_col=c.index + 1,
+                terms=[Term(row_sign(r.label), r.row, c.index + 1) for r in kids],
+            ))
+
     for c in _data_columns(tm):
+        if value is not None and _is_movement(c):
+            # 净值/账面价值这两行只有期初期末，没有发生数，不核发生列
+            continue
         if value is None:
             # 只到净值这一层：原值 − 折旧 = 净值
             g = cell_number(tm.ref.grid, gross.row, c.index + 1)

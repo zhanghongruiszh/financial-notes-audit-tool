@@ -68,8 +68,14 @@ TB_COL_START_OFFSET = 2        # 报表块之后接 TB 块
 
 # ---------------------------------------------------------------- 基础写入
 
+DASH_PLACEHOLDERS = ('-', '--', '—', '——', '–', '/')
+
+
 def _write_value(ws, row, col, value):
     if value is None:
+        return
+    # 附注里的「-」代表 0；写成文本会让引用它的公式直接报错，所以留空
+    if isinstance(value, str) and value.strip() in DASH_PLACEHOLDERS:
         return
     cell = ws.cell(row, col, value)
     cell.font = F_BODY
@@ -145,6 +151,30 @@ def _cn_number(text):
     head, _, rest = text.partition('、')
     return f'{table.get(head, head)}、{rest}' if rest else table.get(head, head)
 
+
+
+
+def _apply_check_colors(ws, max_row, max_col):
+    """用**条件格式**给勾稽底稿上色，不再逐格手标。
+
+      · 有公式且 |值| ≤ 0.01  → 绿底
+      · 有公式且 |值| > 0.01   → 红底
+      · 没有公式的单元格（原始数据）一律不上色
+    """
+    from openpyxl.formatting.rule import FormulaRule
+
+    if max_row < 1 or max_col < 1:
+        return
+    rng = f'A1:{get_column_letter(max_col)}{max_row}'
+    anchor = 'A1'
+    red = FormulaRule(
+        formula=[f'AND(ISFORMULA({anchor}),ISNUMBER({anchor}),ABS({anchor})>0.01)'],
+        fill=FILL_FAIL_TARGET, stopIfTrue=True)
+    green = FormulaRule(
+        formula=[f'AND(ISFORMULA({anchor}),ISNUMBER({anchor}),ABS({anchor})<=0.01)'],
+        fill=FILL_PASS, stopIfTrue=True)
+    ws.conditional_formatting.add(rng, red)
+    ws.conditional_formatting.add(rng, green)
 
 def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
                  global_rows, report_by_row, tb_by_row, report_map, tb_map, raw=None,
@@ -325,7 +355,6 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             cell_diff.number_format = FMT_AMOUNT
             cell_diff.border = BORDER
             cell_diff.font = F_REPORT
-            cell_diff.fill = FILL_PASS
             if cc.status == 'fail':
                 cell_diff.font = Font(name='Consolas', size=9, bold=True,
                                       color='C00000')
@@ -422,10 +451,13 @@ def _terms_expr(item, terms, src_to_dst, global_rows, own_table_idx, col_off=0):
         if ref is None:
             return None
         sign = '-' if t.coef < 0 else '+'
+        # 系数不是 ±1 时（如 25% 税率）必须写出来，否则公式口径就错了
+        mag = abs(t.coef)
+        expr = ref if abs(mag - 1) < 1e-12 else f'{mag:g}*{ref}'
         if i == 0:
-            parts.append(f'-{ref}' if t.coef < 0 else ref)
+            parts.append(f'-{expr}' if t.coef < 0 else expr)
         else:
-            parts.append(f'{sign}{ref}')
+            parts.append(f'{sign}{expr}')
     return ''.join(parts)
 
 
@@ -471,14 +503,12 @@ def _write_check_formula(ws, item, src_to_dst, results_by_key, row_ptr, stats,
         return
     cell.value = formula
     cell.number_format = number_format
+    # 底色交给条件格式，这里只统计
     if res.status == 'fail':
-        cell.fill = FILL_FAIL_TARGET          # 报错：红底 + 正常显示错误数字
         stats['fail'] += 1
     elif res.status == 'unclear':
-        cell.fill = FILL_UNKNOWN              # 存疑：黄底
         stats['unclear'] += 1
     else:
-        cell.fill = FILL_PASS                 # 平的：绿底 + 显示 "-"
         stats['pass'] += 1
 
 
@@ -702,6 +732,17 @@ def _report_item_block(ws, r, report, cross, note_no_checks, note_rows, stats,
             # 已列入"未披露"的，状态直接写未披露，不再重复显示未勾稽
             if flag == '未勾稽' and name in undisclosed:
                 flag, state = '未披露', ''
+            # 报表子项（其中：库存商品、其中：应收股利…）不与 Word 小标题勾，
+            # 它们的勾稽对象是"父项目标题下的同名行"，在底稿里做，
+            # 这里只标状态，不算"未勾稽"
+            try:
+                import report_item_terms as _rt
+                if _rt.class_of(name) == '子项' or _rt.parent_of(name):
+                    if flag == '未勾稽':
+                        flag, state = '子项', ''
+            except Exception:
+                pass
+
             # 只是子项（其中/减：/加：），不是报表项目，不算未勾稽
             if flag == '未勾稽' and name in child_names:
                 continue
@@ -1253,6 +1294,11 @@ def write_workbook(out_path, model, tables, checks, results, cross=None,
         if tb_checks:
             ws.column_dimensions[get_column_letter(tb_map[p])].width = 18
     ws.freeze_panes = 'A5'
+    # 条件格式上色（有公式=绿，|差|>0.01=红）
+    try:
+        _apply_check_colors(ws, ws.max_row, ws.max_column)
+    except Exception:
+        pass
 
     _write_summary_sheet(ws_sum, stats, results, model, tables,
                          len(cross or []), len(tb_checks or []),
