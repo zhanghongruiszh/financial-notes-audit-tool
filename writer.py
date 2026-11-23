@@ -1004,6 +1004,37 @@ def _write_summary_sheet(ws, stats, results, model, tables, cross_count,
     except Exception:
         pass
 
+    # ---------------- 三、附注内部勾稽差异 ----------------
+    fails = [r for r in (results or []) if getattr(r, 'status', '') == 'fail']
+    r = ws.max_row + 2
+    t = ws.cell(r, 1, f'三、附注内部勾稽差异（{len(fails)} 条）')
+    t.font = Font(name='微软雅黑', size=11, bold=True, color='C00000')
+    r += 1
+    if fails:
+        for c, name in enumerate(('序号', '科目', '表号', '检查项',
+                                  '期望值', '实际值', '差额'), 1):
+            cell = ws.cell(r, c, name)
+            cell.font = F_HEADER
+            cell.fill = FILL_HEADER
+            cell.border = BORDER
+        r += 1
+        tmap = {tm.ref.idx: tm for tm in (tables or [])}
+        for i, res in enumerate(fails, 1):
+            tm = tmap.get(res.item.table_idx)
+            diff = (res.actual or 0) - (res.expected or 0)
+            vals = (i, (tm.sub_item if tm else ''), res.item.table_idx,
+                    res.item.label, res.expected, res.actual, diff)
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.font = F_BODY
+                cell.border = BORDER
+                if c in (5, 6, 7):
+                    cell.number_format = FMT_AMOUNT
+                    cell.font = Font(name='Consolas', size=9, color='C00000')
+            r += 1
+    else:
+        ws.cell(r, 1, '（无差异）').font = F_BODY
+
     for col, w in (('A', 6), ('B', 30), ('C', 12), ('D', 22), ('E', 18),
                    ('F', 18), ('G', 14), ('H', 18), ('I', 18), ('J', 14),
                    ('K', 10), ('L', 10), ('M', 18)):
