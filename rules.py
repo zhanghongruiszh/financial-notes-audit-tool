@@ -1597,7 +1597,14 @@ def _rule_restricted_money(tables, checks):
     for tm in tables:
         if '受限' not in str(tm.sub_item):
             continue
+        # 行名可能是「货币资金」「其中：货币资金」「受限货币资金」等，模糊匹配
         row = find_row(tm, '货币资金')
+        if row is None:
+            for r in tm.rows:
+                if r.kind in ('detail', 'subtotal', 'total') and r.label \
+                        and '货币资金' in r.label:
+                    row = r
+                    break
         if row is None:
             continue
         # 货币资金项目下、含"受限/监管/冻结"的那张表

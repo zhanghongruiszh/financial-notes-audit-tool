@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 """
 docx_ir.py — 附注文档的「结构中间层」（IR）。
 
@@ -25,7 +26,6 @@ docx_ir.py — 附注文档的「结构中间层」（IR）。
 """
 
 import os
-import re
 import shutil
 import tempfile
 
@@ -521,6 +521,13 @@ def is_trailing_minus(text):
     return bool(RE_TRAIL_MINUS.match(str(text or '').strip()))
 
 
+def is_misgrouped_number(text):
+    """数字的千分位写错位了（如 '33,544,412,70'，最后一组只有 2 位）。"""
+    if text is None:
+        return False
+    return bool(re.match(r'^-?\d{1,3}(?:,\d{3})*,\d{2}$', str(text).strip()))
+
+
 def parse_cell_value(text):
     """把表格文字转成 Excel 里能用的值。
 
@@ -538,6 +545,15 @@ def parse_cell_value(text):
         return None
     if s in NIL_MARKS:
         return '-'
+
+    # 千分位错位：'33,544,412,70' —— 最后一组只有 2 位，
+    # 说明小数点是漏写了，最后一个逗号其实是小数点
+    m = re.match(r'^(-?\d{1,3}(?:,\d{3})*),(\d{2})$', s)
+    if m:
+        try:
+            return float(m.group(1).replace(',', '') + '.' + m.group(2))
+        except ValueError:
+            pass
 
     m = RE_TRAIL_MINUS.match(s)
     if m:

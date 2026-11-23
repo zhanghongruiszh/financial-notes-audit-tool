@@ -293,6 +293,12 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
             text = cellinfo['t']
             if not text:
                 continue
+            if anomalies is not None and docx_ir.is_misgrouped_number(text):
+                anomalies.append({
+                    'sub_item': tm.sub_item, 'table': tm.ref.idx,
+                    'row': r_idx, 'col': c_idx,
+                    'text': str(text).strip(), 'kind': '千分位错位',
+                })
             if anomalies is not None and docx_ir.is_trailing_minus(text):
                 anomalies.append({
                     'sub_item': tm.sub_item, 'table': tm.ref.idx,

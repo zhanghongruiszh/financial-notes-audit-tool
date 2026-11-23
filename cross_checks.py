@@ -846,6 +846,76 @@ def add_split_period_checks(model, tables, report, out, get_value=None):
                     basis='分期表'))
     return out
 
+
+
+def add_sub_item_checks(model, tables, report, out, get_value=None):
+    """报表**子项**（其中：库存商品、其中：其他权益工具投资公允价值变动…）
+
+    子项不与 Word 小标题勾，而与"父项目那一节里的同名行"勾。
+    报表子项名 → 去掉「其中：」→ 在父项目的表里按行名找 → 取该行金额。
+    """
+    if get_value is None:
+        return out
+    try:
+        import report_item_terms as rt
+    except Exception:
+        return out
+
+    have = {(c.name, c.period) for c in (out or []) if c.period}
+    by_sub = {}
+    for tm in tables:
+        by_sub.setdefault(tm.sub_item, []).append(tm)
+
+    for sheet in report.sheets:
+        for name, (row, item_col) in sheet.items.items():
+            parent = rt.parent_of(name)
+            if not parent:
+                continue
+            cols = (sheet.blocks or {}).get(item_col) or {}
+            if not cols:
+                continue
+            targets = {}
+            for col, period in cols.items():
+                v = get_value(sheet.name, row, col)
+                if v:
+                    targets[period] = (v, col)
+            if not targets:
+                continue
+
+            clean = name.replace('其中：', '').replace('其中:', '').strip()
+            group = by_sub.get(parent) or []
+            if not group:
+                group = [tm for sub, tms in by_sub.items()
+                         if parent in sub for tm in tms]
+            for tm in group:
+                for r in tm.rows:
+                    if r.kind not in ('detail', 'subtotal', 'total') or not r.label:
+                        continue
+                    lab = r.label.replace('其中：', '').replace('其中:', '').strip()
+                    if not (lab == clean or clean in lab or lab in clean):
+                        continue
+                    for c in tm.columns:
+                        if not c.is_data or not c.period:
+                            continue
+                        if (name, c.period) in have:
+                            continue
+                        if c.period not in targets:
+                            continue
+                        v, rep_col = targets[c.period]
+                        nv = rules.cell_number(tm.ref.grid, r.row, c.index + 1)
+                        if nv is None or abs(nv - v) > 0.01:
+                            continue
+                        have.add((name, c.period))
+                        out.append(CrossCheck(
+                            chapter=tm.chapter, scope='', sub_item=tm.sub_item,
+                            name=name, period=c.period, period_key=None,
+                            note_value=nv, note_ref='', sheet=sheet.name,
+                            rows=row, cols=rep_col, note_table=tm.ref.idx,
+                            note_row=r.row, note_col=c.index + 1,
+                            note_terms=[(r.row, c.index + 1, 1)],
+                            basis='子项'))
+    return out
+
 def evaluate(cross, report_values):
     """report_values: {(sheet_name,row,col): value}"""
     if cross.sheet and cross.rows and cross.cols:
