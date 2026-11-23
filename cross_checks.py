@@ -744,6 +744,38 @@ def drop_ambiguous_sections(cross):
 
 
 
+
+
+def fix_report_columns(cross, get_value=None):
+    """报表列按"数值"再确认一次。
+
+    附注里取到金额、但报表列定位不上（或定位到空列）时，
+    拿这个金额去该行所有列里找，谁等于它就用谁。
+    """
+    if get_value is None:
+        return cross
+    for c in cross:
+        if not c.sheet or not c.rows:
+            continue
+        note = c.note_value
+        if note is None:
+            continue
+        cur = get_value(c.sheet, c.rows, c.cols) if c.cols else None
+        if cur is not None and abs(cur - note) <= 0.01:
+            continue
+        best = None
+        for col in range(1, 20):
+            v = get_value(c.sheet, c.rows, col)
+            if v is None:
+                continue
+            if abs(v - note) <= 0.01:
+                best = col
+                break
+        if best:
+            c.cols = best
+            c.report_value = get_value(c.sheet, c.rows, best)
+    return cross
+
 def evaluate(cross, report_values):
     """report_values: {(sheet_name,row,col): value}"""
     if cross.sheet and cross.rows and cross.cols:
