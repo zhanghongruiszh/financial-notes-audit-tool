@@ -255,9 +255,11 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
         hc.alignment = Alignment(horizontal='center')
 
     periods = list(report_map.keys())
-    has_tb_here = (show_title and
-                   any(k[0] == tm.ref.idx for k in (tb_by_row or {})))
-    for pp in (periods if show_title else []):
+    # 报表勾稽列：只要这张表上有勾稽就写表头，
+    # 不能因为它是同一科目的第二张表（无标题）就漏掉
+    has_report_here = any(k[0] == tm.ref.idx for k in (report_by_row or {}))
+    has_tb_here = any(k[0] == tm.ref.idx for k in (tb_by_row or {}))
+    for pp in (periods if (show_title or has_report_here or has_tb_here) else []):
         hc = ws.cell(title_row, report_map[pp], f'【报表勾稽: {pp}】')
         hc.font = F_REPORT
         hc.fill = FILL_REPORT_HDR
@@ -335,8 +337,7 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     # ---------------- 8. 报表 / TB 差额 ----------------
     for r_idx in range(1, n_rows + 1):
         dst = src_to_dst[r_idx]
-        for cc in (report_by_row.get((tm.ref.idx, r_idx), [])
-                   if show_title else []):
+        for cc in report_by_row.get((tm.ref.idx, r_idx), []):
             if cc.period not in report_map:
                 continue
             dc = report_map[cc.period]
