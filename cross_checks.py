@@ -554,7 +554,8 @@ def build_cross_checks(model, tables, report, get_value=None):
                 if role in ('价值', '余额', '金额', '准备'):
                     # 同一期间同一角色有多列时（如"收入/成本"都判成金额），
                     # 保留文档顺序里的第一列，别让后面的覆盖前面的
-                    per_period.setdefault(col.period, {}).setdefault(role, col)
+                    per_period.setdefault(col.period, {}).setdefault(
+                        role, (tm, tot, col))
             if hint and not per_period:
                 # 表头完全对不上，退回用全部列，但标记出来
                 for col in tm.columns:
@@ -562,28 +563,53 @@ def build_cross_checks(model, tables, report, get_value=None):
                         continue
                     role = col.role or ('金额' if col.kind == 'amount' else None)
                     if role in ('价值', '余额', '金额', '准备'):
-                        per_period.setdefault(col.period, {})[role] = col
+                        per_period.setdefault(col.period, {})[role] = (tm, tot, col)
+
+            # 期初/期末分表的科目（如存货：期末一张表、期初另一张），
+            # 主表缺的期间从同节其它表里补
+            for other in group:
+                if other is tm:
+                    continue
+                otot = next((r for r in other.rows
+                             if r.kind in ('total', 'subtotal')
+                             and '合计' in (r.label or '')), None)
+                if otot is None:
+                    continue
+                for col in other.columns:
+                    if not col.is_data or not col.period:
+                        continue
+                    if col.period in per_period:
+                        continue
+                    role = col.role or ('金额' if col.kind == 'amount' else None)
+                    if role in ('价值', '余额', '金额', '准备'):
+                        per_period.setdefault(col.period, {}).setdefault(
+                            role, (other, otot, col))
 
             for period, roles in sorted(per_period.items()):
+                tm_p, tot_p, _first = next(iter(roles.values()))
                 if '价值' in roles:
-                    col, basis = roles['价值'], '账面价值'
-                    note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
-                    terms = [(tot.row, col.index + 1, 1)]
+                    tm_p, tot_p, col = roles['价值']
+                    basis = '账面价值'
+                    note_val = rules.cell_number(tm_p.ref.grid, tot_p.row, col.index + 1)
+                    terms = [(tot_p.row, col.index + 1, 1)]
                 elif '余额' in roles and '准备' in roles:
-                    col, basis = roles['余额'], '账面余额−坏账准备'
-                    bal = rules.cell_number(tm.ref.grid, tot.row, roles['余额'].index + 1)
-                    prov = rules.cell_number(tm.ref.grid, tot.row, roles['准备'].index + 1)
+                    tm_p, tot_p, col = roles['余额']
+                    basis = '账面余额−坏账准备'
+                    bal = rules.cell_number(tm_p.ref.grid, tot_p.row, col.index + 1)
+                    prov = rules.cell_number(tm_p.ref.grid, tot_p.row, roles['准备'][2].index + 1)
                     note_val = None if (bal is None or prov is None) else bal - prov
-                    terms = [(tot.row, roles['余额'].index + 1, 1),
-                             (tot.row, roles['准备'].index + 1, -1)]
+                    terms = [(tot_p.row, col.index + 1, 1),
+                             (tot_p.row, roles['准备'][2].index + 1, -1)]
                 elif '余额' in roles:
-                    col, basis = roles['余额'], '账面余额'
-                    note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
-                    terms = [(tot.row, col.index + 1, 1)]
+                    tm_p, tot_p, col = roles['余额']
+                    basis = '账面余额'
+                    note_val = rules.cell_number(tm_p.ref.grid, tot_p.row, col.index + 1)
+                    terms = [(tot_p.row, col.index + 1, 1)]
                 elif '金额' in roles:
-                    col, basis = roles['金额'], '金额'
-                    note_val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
-                    terms = [(tot.row, col.index + 1, 1)]
+                    tm_p, tot_p, col = roles['金额']
+                    basis = '金额'
+                    note_val = rules.cell_number(tm_p.ref.grid, tot_p.row, col.index + 1)
+                    terms = [(tot_p.row, col.index + 1, 1)]
                 else:
                     continue
                 if note_val is None:
