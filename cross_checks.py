@@ -639,6 +639,111 @@ def to_number(value):
         return None
 
 
+
+
+def match_by_column(model, tables, report, out, get_value=None):
+    """按"口径列"补勾稽：报表项目名里含 成本/收入 时，
+    在同一节里取「合计行 + 该口径列」。
+
+    典型：营业成本、营业收入 —— 附注把它们放在「营业收入、营业成本」
+    一张表里，用列区分口径。
+    """
+    if get_value is None:
+        return out
+    claimed = {(c.sheet, c.rows, c.cols) for c in (out or []) if c.sheet}
+
+    for sheet in report.sheets:
+        for name, (row, item_col) in sheet.items.items():
+            cols = (sheet.blocks or {}).get(item_col) or {}
+            if not cols:
+                continue
+            # 报表列靠"这一列真的等于这个数"来确认，别只信表头映射
+            targets = {}
+            col_of = {}
+            for col, period in cols.items():
+                v = get_value(sheet.name, row, col)
+                if v:
+                    targets[period] = v
+                    col_of[period] = col
+            if not targets:
+                continue
+            for period, tval in list(targets.items()):
+                if col_of.get(period) and abs(
+                        get_value(sheet.name, row, col_of[period]) - tval) <= 0.01:
+                    continue
+                hitc = None
+                for col in set(list(cols.keys()) + list(cols.values())):
+                    v = get_value(sheet.name, row, col)
+                    if v and abs(v - tval) <= 0.01:
+                        hitc = col
+                        break
+                if hitc:
+                    col_of[period] = hitc
+
+            for kw in ('成本', '收入'):
+                if kw not in name:
+                    continue
+                hit = False
+                for tm in tables:
+                    if name not in tm.sub_item:
+                        continue
+                    tot = next((r for r in tm.rows
+                                if r.kind in ('total', 'subtotal')
+                                and '合计' in (r.label or '')), None)
+                    if tot is None:
+                        continue
+                    for c in tm.columns:
+                        if not c.is_data or kw not in (c.header_text or ''):
+                            continue
+                        nv = rules.cell_number(tm.ref.grid, tot.row, c.index + 1)
+                        if nv is None:
+                            continue
+                        for period, tval in targets.items():
+                            if abs(nv - tval) > 0.01:
+                                continue
+                            key = (sheet.name, row, c.index + 1)
+                            if key in claimed:
+                                continue
+                            claimed.add(key)
+                            out.append(CrossCheck(
+                                chapter=tm.chapter, scope='',
+                                sub_item=tm.sub_item, name=name,
+                                period=period, period_key=None,
+                                note_value=nv, note_ref='',
+                                sheet=sheet.name, rows=row,
+                                cols=col_of.get(period, cols.get(period, c.index + 1)),
+                                note_table=tm.ref.idx, note_row=tot.row,
+                                note_col=c.index + 1,
+                                note_terms=[(tot.row, c.index + 1, 1)],
+                                basis='口径列'))
+                            hit = True
+                    if hit:
+                        break
+    return out
+
+
+def drop_ambiguous_sections(cross):
+    """「营业收入、营业成本」这类一节含两个科目的整节勾稽，一旦两个科目
+    各自都拿到了勾稽，整节那条就是多余的（而且它取的是合计行，容易错），删掉。
+    """
+    ok = {c.name for c in cross if c.basis == '口径列'}
+    keep = []
+    for c in cross:
+        if '、' in (c.name or ''):
+            parts = [p for p in c.name.split('、') if p]
+            # 各科目都各自挂上了口径列勾稽 → 整节那条删掉
+            if parts and all(p in ok for p in parts):
+                continue
+            # 整节勾稽没挂上目标格的（待确认），也删掉，不占位
+            if getattr(c, 'note_table', None) is None and \
+                    getattr(c, 'status', '') in ('', 'unmatched', '待确认'):
+                if c.basis != '口径列':
+                    continue
+        keep.append(c)
+    return keep
+
+
+
 def evaluate(cross, report_values):
     """report_values: {(sheet_name,row,col): value}"""
     if cross.sheet and cross.rows and cross.cols:

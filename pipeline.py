@@ -224,6 +224,18 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
     cross = cross_checks.fill_missing_checks(
         model, tables, report, cross, get_value=_get_value,
         number_index=number_index)
+    # 口径列补勾：营业成本/营业收入 这类同表不同列的
+    try:
+        cross = cross_checks.match_by_column(
+            model, tables, report, cross, get_value=_get_value)
+    except Exception as exc:
+        log(f'      口径列匹配跳过：{exc}')
+
+    try:
+        cross = cross_checks.drop_ambiguous_sections(cross)
+    except Exception:
+        pass
+
     # 「归属于母公司所有者的其他综合收益」只对利润表，不对资产负债表
     cross = [c for c in cross
              if not (str(getattr(c, 'sub_item', '')).startswith('归属于')
