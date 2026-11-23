@@ -232,6 +232,12 @@ def run(notes_path, report_path, tb_path=None, archive_root='.',
         log(f'      口径列匹配跳过：{exc}')
 
     try:
+        cross = cross_checks.add_split_period_checks(
+            model, tables, report, cross, get_value=_get_value)
+    except Exception as exc:
+        log(f'      分期表补勾跳过：{exc}')
+
+    try:
         cross = cross_checks.fix_report_columns(cross, get_value=_get_value)
     except Exception:
         pass

@@ -776,6 +776,76 @@ def fix_report_columns(cross, get_value=None):
             c.report_value = get_value(c.sheet, c.rows, best)
     return cross
 
+
+
+def add_split_period_checks(model, tables, report, out, get_value=None):
+    """同一科目拆成两张表时（存货：期末一张、期初一张），
+    给主表没覆盖到的期间补勾稽。
+
+    只在"附注金额能在报表该行找到相同数值"时才生成，避免误报。
+    """
+    if get_value is None:
+        return out
+    have = {(c.sub_item, c.period) for c in (out or []) if c.period}
+    by_sub = {}
+    for tm in tables:
+        by_sub.setdefault(tm.sub_item, []).append(tm)
+
+    for sub_name, group in by_sub.items():
+        if len(group) < 2:
+            continue
+        sheet = found_row = None
+        for sh in report.sheets:
+            for name, (row, _col) in sh.items.items():
+                if name == sub_name or sub_name.startswith(name):
+                    sheet, found_row = sh, row
+                    break
+            if sheet:
+                break
+        if sheet is None:
+            continue
+
+        for tm in group:
+            tot = next((r for r in tm.rows
+                        if r.kind in ('total', 'subtotal')
+                        and '合计' in (r.label or '')), None)
+            if tot is None:
+                continue
+            for col in tm.columns:
+                if not col.is_data or not col.period:
+                    continue
+                # 不在这里跳过：主表那条可能挂错了期间表，下面会替换
+                role = col.role or ('金额' if col.kind == 'amount' else None)
+                if role not in ('价值', '余额', '金额'):
+                    continue
+                val = rules.cell_number(tm.ref.grid, tot.row, col.index + 1)
+                if val is None:
+                    continue
+                rep_col = None
+                for c2 in range(1, 20):
+                    v = get_value(sheet.name, found_row, c2)
+                    if v is not None and abs(v - val) <= 0.01:
+                        rep_col = c2
+                        break
+                if rep_col is None:
+                    continue
+                same = [c for c in out
+                        if c.sub_item == sub_name and c.period == col.period]
+                if any(c.note_table == tm.ref.idx for c in same):
+                    continue
+                for c_old in same:
+                    out.remove(c_old)
+                have.add((sub_name, col.period))
+                out.append(CrossCheck(
+                    chapter=tm.chapter, scope='', sub_item=sub_name,
+                    name=sub_name, period=col.period, period_key=None,
+                    note_value=val, note_ref='', sheet=sheet.name,
+                    rows=found_row, cols=rep_col, note_table=tm.ref.idx,
+                    note_row=tot.row, note_col=col.index + 1,
+                    note_terms=[(tot.row, col.index + 1, 1)],
+                    basis='分期表'))
+    return out
+
 def evaluate(cross, report_values):
     """report_values: {(sheet_name,row,col): value}"""
     if cross.sheet and cross.rows and cross.cols:
