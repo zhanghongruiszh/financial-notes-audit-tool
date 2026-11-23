@@ -245,7 +245,8 @@ def _write_table(ws, tm, checks_by_row, results_by_key, row_ptr, stats,
     base_col = tm.ref.cols + 2 + COL_OFF
     report_start = min(report_map.values()) if report_map else 999
     if rules_here and base_col + len(rules_here) > report_start:
-        base_col = (max(tb_map.values()) if tb_map else report_start) + 2
+        # 报表勾稽列必须是最右边，横向列放不下就往左挪
+        base_col = report_start - len(rules_here)
     for i, rid in enumerate(rules_here):
         check_cols[rid] = base_col + i
         hc = ws.cell(title_row, check_cols[rid], horiz_map[rid])
